@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "web_search": {
+      "command": "uv",
+      "args": [
+        "run",
+        "/home/abhi/ollama_web_search.py"
+      ],
+      "env": {
+        "OLLAMA_API_KEY": "${OLLAMA_API_KEY}"
+      }
+    },
+    "searxng": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8080"
+      }
+    },
+    "excalidraw": {
+      "command": "node",
+      "args": [
+        "/home/abhi/excalidraw-mcp/dist/index.js",
+        "--stdio"
+      ]
+    }
+  }
+}
