@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.data.domain.Page;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
@@ -113,9 +114,13 @@ public class ResearchOrchestratorService {
                 SubTopic subTopic = subTopics.get(i);
 
                 String subPrompt = """
-                    You are a research assistant. Search the web for information about your assigned topic,
-                    then read relevant URLs to gather detailed content. Synthesize the findings into a
-                    structured summary with key points, evidence, and references.
+                    You are a research assistant. Follow these steps for your assigned topic:
+
+                    1. Use the search tool to find web pages about this topic
+                    2. For each relevant URL returned by search, use the read_url tool to fetch full page content
+                    3. Synthesize all gathered information into a structured summary with key points, evidence, and references
+
+                    Always use both tools — search alone only returns snippets. You MUST call read_url for any URLs that look relevant before synthesizing your answer.
                     """;
 
                 streamService.sendProgress(sessionId, "Researching: " + subTopic.getTitle());
@@ -199,6 +204,7 @@ public class ResearchOrchestratorService {
     /**
      * Get a research session by ID (with eager fetch of steps).
      */
+    @Transactional(readOnly = true)
     public ResearchSession getResearch(UUID sessionId) {
         return sessionRepo.findByIdWithSteps(sessionId);
     }
@@ -217,10 +223,13 @@ public class ResearchOrchestratorService {
     /**
      * Get historical research sessions with pagination.
      */
+    @Transactional(readOnly = true)
     public Page<ResearchSession> getHistoricalSessions(java.util.function.Predicate<ResearchSession> filter,
                                                        org.springframework.data.domain.PageRequest pageable) {
-        // Since there's no JPA criteria for filtering by status + pagination directly in the repo,
-        // we'll fetch all and filter in memory. For production, consider Spring Data JPA custom queries.
+        // Ensure this repository read executes inside a Spring-managed transaction so JDBC
+        // connections have autocommit disabled while LOBs are accessed. This helps avoid
+        // "Large Objects may not be used in auto-commit mode" when a driver/DB returns
+        // Clob instances that rely on the PostgreSQL Large Object API.
         return sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
     }
 

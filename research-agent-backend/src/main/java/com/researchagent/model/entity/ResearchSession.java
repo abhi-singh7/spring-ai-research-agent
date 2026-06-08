@@ -37,7 +37,7 @@ public class ResearchSession {
     @ToString.Exclude
     private List<ResearchStep> steps = new ArrayList<>();
 
-    @Lob
+    //@Lob
     @Column(columnDefinition = "TEXT")
     private String finalReport;
 
