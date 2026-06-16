@@ -1,8 +1,10 @@
-import { Component, inject, signal, OnInit, OnDestroy } from '@angular/core';
+import { Component, inject, signal, OnInit, OnDestroy, computed } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { Subscription } from 'rxjs';
 import { StepListComponent } from '../../shared/components/step-list/step-list.component';
 import { ReportViewerComponent } from '../../shared/components/report-viewer/report-viewer.component';
 import { ResearchService } from '../../core/services/research.service';
@@ -10,9 +12,19 @@ import { ResearchService } from '../../core/services/research.service';
 @Component({
   selector: 'app-active-research',
   standalone: true,
-  imports: [MatCardModule, MatProgressBarModule, MatButtonModule, RouterLink, StepListComponent, ReportViewerComponent],
+  imports: [MatCardModule, MatProgressBarModule, MatButtonModule, RouterLink, StepListComponent, ReportViewerComponent, MatIconModule],
   template: `
     <div class="active-research-container">
+      <!-- Error notification -->
+      @if (errorMessage()) {
+        <mat-card class="error-banner">
+          <span>{{ errorMessage() }}</span>
+          <button mat-icon-button (click)="dismissError()">
+            <mat-icon>close</mat-icon>
+          </button>
+        </mat-card>
+      }
+
       <!-- Back button -->
       @if (researchSession()) {
         <a routerLink="/research/history" mat-button>← Back to History</a>
@@ -41,8 +53,18 @@ import { ResearchService } from '../../core/services/research.service';
         <!-- Step-by-step progress -->
         <step-list [steps]="researchSteps()" [activeStepIndex]="activeStepIndex()"></step-list>
 
-        <!-- Final report viewer — only when completed and has a finalReport -->
-        @if (researchSession()!.status === 'COMPLETED' && researchSession()!.finalReport) {
+        <!-- Streaming content placeholder while waiting for first chunks -->
+        @if (shouldDisplayStreamingContent() && !streamingContent()) {
+          <mat-card class="streaming-placeholder">
+            <div class="spinner"></div>
+            <p>Gathering findings...</p>
+          </mat-card>
+        }
+
+        <!-- Streaming content or final report -->
+        @if (shouldDisplayStreamingContent()) {
+          <report-viewer [content]="streamingContent()" />
+        } @else if (researchSession()!.status === 'COMPLETED' && researchSession()!.finalReport) {
           <report-viewer [content]="researchSession()!.finalReport!" />
         }
 
@@ -77,6 +99,22 @@ import { ResearchService } from '../../core/services/research.service';
 
     .cancel-btn { margin-top: 16px; }
     .empty-state { text-align: center; color: #999; padding: 40px; }
+
+    /* Error banner */
+    .error-banner { margin-bottom: 16px; padding: 8px 16px !important; background-color: #ffebee !important; color: #c62828 !important; display: flex; align-items: center; justify-content: space-between; }
+    @media (prefers-color-scheme: dark) { .error-banner { background-color: rgba(239, 83, 80, 0.15) !important; color: #ef5350 !important; } }
+
+    /* Streaming content placeholder */
+    .streaming-placeholder { display: flex; align-items: center; gap: 12px; padding: 24px; }
+    .streaming-placeholder .spinner { width: 20px; height: 20px; border: 3px solid #e0e0e0; border-top-color: #757575; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .streaming-placeholder p { color: #9e9e9e; margin: 0; font-style: italic; }
+
+    /* Dark mode streaming placeholder */
+    @media (prefers-color-scheme: dark) {
+      .streaming-placeholder .spinner { border-color: #424242; border-top-color: #bdbdbd; }
+      .streaming-placeholder p { color: #757575; }
+    }
   `]
 })
 export class ActiveResearchComponent implements OnInit, OnDestroy {
@@ -86,14 +124,23 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
 
   sessionId!: string;
 
+  private errorSub = new Subscription();
+  errorMessage = signal<string | null>(null);
+
   ngOnInit(): void {
     this.sessionId = this.route.snapshot.paramMap.get('sessionId')!;
     this.loadSession();
+
+    // Subscribe to errors from service
+    this.errorSub = this.researchService.error$.subscribe(err => {
+      this.errorMessage.set(err);
+    });
   }
 
   ngOnDestroy(): void {
     this.researchService.disconnectSse();
     this.researchService.stopPolling();
+    this.errorSub.unsubscribe();
   }
 
   // Delegate all signal state to the ResearchService
@@ -102,6 +149,18 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
   progressPercent = this.researchService.progressPercent;
   researchSteps = this.researchService.researchSteps;
   activeStepIndex = this.researchService.activeStepIndex;
+
+  // Streaming content signals
+  shouldDisplayStreamingContent = this.researchService.shouldDisplayStreamingContent;
+  streamingContent = computed(() => {
+    const session = this.researchSession();
+    if (session?.finalReport) return session.finalReport;
+    return this.researchService.reportContent() || '';
+  });
+
+  dismissError(): void {
+    this.errorMessage.set(null);
+  }
 
   getStatusColor(status: string): string { return status.toLowerCase(); }
   getStatusLabel(status: string): string {
@@ -121,7 +180,14 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
           this.researchService.connectSse(this.sessionId);
         }
       },
-      error: () => {}  // Ignore transient errors
+      error: () => {
+        const session = this.researchSession();
+        if (session) {
+          this.errorMessage.set('Could not load research session. It may have been deleted.');
+        } else {
+          this.errorMessage.set('Failed to load the research session. Please try again.');
+        }
+      }
     });
   }
 

@@ -28,7 +28,7 @@ public class UrlReaderTool {
 
             Document doc = Jsoup.connect(url)
                     .userAgent("Mozilla/5.0 (compatible; ResearchBot/1.0)")
-                    .timeout(15000) // 15 second timeout
+                    .timeout(15000) // 15 second timeout for all network operations (connect + read)
                     .followRedirects(true)
                     .maxBodySize(2 * 1024 * 1024) // 2MB max body size
                     .get();
@@ -36,7 +36,7 @@ public class UrlReaderTool {
             String content = extractMainContent(doc);
 
             if (content == null || content.isBlank()) {
-                return "No readable content found at: " + url;
+                return ""; // Return empty string so LLM can use search snippets instead of failing
             }
 
             // Truncate to requested length with ellipsis
@@ -80,14 +80,23 @@ public class UrlReaderTool {
             }
         }
 
-        // Strategy 2: Fall back to removing scripts/styles and getting all text
+        // Strategy 2: Fall back to removing scripts/styles and getting all body text
         var content = doc.select("body").first();
         if (content != null) {
-            return cleanContent(content.text(), 15000);
+            String text = cleanContent(content.text(), 15000);
+            // Only return body text if it has meaningful content (minimum 50 chars to avoid noise)
+            if (!text.isEmpty() && text.length() > 50) {
+                return text;
+            }
         }
 
-        // Strategy 3: Last resort — get all body text
-        return cleanContent(doc.body().text(), 15000);
+        // Strategy 3: Last resort — get all body text without any filtering
+        String lastResort = cleanContent(doc.body().text(), 15000);
+        if (!lastResort.isEmpty()) {
+            return lastResort;
+        }
+
+        return ""; // Empty string instead of error — LLM can use search snippets instead
     }
 
     /**
