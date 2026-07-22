@@ -3,9 +3,6 @@ package com.researchagent.tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Element;
-
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -45,14 +42,13 @@ public class WebSearchTool {
             String backend = router.getPreferredServer(taskType);
 
             if (backend == null) {
-                return searchViaDuckDuckGo(query);
+                // Unknown task type — fall back to SearXNG directly
+                return searchViaSearxng(query);
             }
 
             return switch (backend) {
-                case "web_search" -> searchViaSearxng(query);
-                case "searxng" -> searchViaSearxng(query);
-                case "ddg_search" -> searchViaSearxng(query);
-                default -> searchViaDuckDuckGo(query);
+                case "web_search", "searxng" -> searchViaSearxng(query);
+                default -> searchViaSearxng(query);  // SearXNG is the only local HTTP fallback
             };
 
         } catch (Exception e) {
@@ -207,69 +203,7 @@ public class WebSearchTool {
         return "";
     }
 
-    /**
-     * DUCKDUCKGO FALLBACK — reads full HTML response and extracts URLs via Jsoup.
-     */
-    private String searchViaDuckDuckGo(String query) {
-        try {
-            String encoded = URLEncoder.encode(query, "UTF-8");
 
-            HttpURLConnection conn = (HttpURLConnection)
-                    new URL("https://html.duckduckgo.com/html/?q=" + encoded).openConnection();
-
-            conn.setRequestMethod("GET");
-
-            String rawResponse = read(conn);
-
-            return parseDuckDuckGoHtml(rawResponse);
-
-        } catch (Exception e) {
-            return "DDG error: " + e.getMessage();
-        }
-    }
-
-    /**
-     * Parse DuckDuckGo HTML response using Jsoup to extract article links.
-     */
-    private String parseDuckDuckGoHtml(String rawResponse) {
-        if (rawResponse == null || rawResponse.isBlank()) {
-            return "No results from DuckDuckGo";
-        }
-
-        try {
-            var doc = Jsoup.parse(rawResponse);
-
-            // Extract article links via the .url_header class selector
-            var elements = doc.select("a.result__a, a.url_header");
-            if (elements.isEmpty()) {
-                return "DuckDuckGo returned no extractable results";
-            }
-
-            List<String> lines = new ArrayList<>();
-            int idx = 0;
-            for (Element link : elements) {
-                String url = link.attr("href");
-                String title = cleanText(link.text());
-                if (!url.isEmpty() && !title.isEmpty()) {
-                    lines.add((idx + 1) + ". " + title);
-                    lines.add("   URL: " + url);
-                    idx++;
-                }
-            }
-
-            // Also include any snippets from result descriptions (DDG doesn't provide them in HTML format)
-            return String.join("\n", lines.isEmpty() ? List.of("No results") : lines);
-
-        } catch (Exception e) {
-            // Fall back to raw response — may still be useful for the LLM
-            return "DuckDuckGo HTML parse failed, returning raw:\n" + rawResponse;
-        }
-    }
-
-    private String cleanText(String text) {
-        if (text == null) return "";
-        return text.replaceAll("\\s+", " ").trim();
-    }
 
     /**
      * Parse Tavily JSON response into structured text for the LLM.

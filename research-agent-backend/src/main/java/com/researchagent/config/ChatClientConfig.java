@@ -72,8 +72,6 @@ public class ChatClientConfig {
             log.info("MCP servers configured in application.yml:");
             log.info("  - web_search (uv run /home/abhi/ollama_web_search.py) [requires OLLAMA_API_KEY]");
             log.info("  - searxng (npx mcp-searxng) [requires SEARXNG_URL]");
-            log.info("  - excalidraw (node /home/abhi/excalidraw-mcp/dist/index.js --stdio)");
-            log.info("  - ddg_search (uvx duckduckgo-mcp-server)");
             
             // Check if the ollama_web_search.py script exists on disk
             java.io.File ollamaScript = new java.io.File("/home/abhi/ollama_web_search.py");
@@ -92,7 +90,7 @@ public class ChatClientConfig {
         // Users should verify MCP server status via logs above or by checking which tools
         // appear in the ChatClient tool list at runtime.
         
-        log.info("Local fallback chain: web_search → searxng → ddg_search (always available)");
+        log.info("Local fallback chain: searxng → web_search MCP (always available)");
         log.info("================================");
     }
 

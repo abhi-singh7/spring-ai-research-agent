@@ -16,19 +16,16 @@ public class McpToolRouter {
     public McpToolRouter() {
 
         routingMap.put("latest-information", List.of(
-                "web_search",
                 "searxng",
-                "ddg_search"
+                "web_search"
         ));
 
         routingMap.put("general-search", List.of(
                 "searxng",
-                "ddg_search",
                 "web_search"
         ));
 
         routingMap.put("search-fallback", List.of(
-                "ddg_search",
                 "searxng",
                 "web_search"
         ));

@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
  * Error handling and fallback chain for MCP server failures.
  * 
  * When an MCP server is unavailable, this handler provides graceful degradation:
- * - SearXNG unavailable → DDG Search → Web Search
+ * - SearXNG unavailable → Web Search (MCP)
  * - Timeout errors → retry with longer timeout or skip
  * - Invalid responses → log error, continue without that tool
  */
@@ -30,9 +30,7 @@ public class McpClientErrorHandler {
         
         // Determine fallback based on server type
         if (serverName.equals("searxng")) {
-            log.warn("SearXNG unavailable — search will fall back to DDG and Web Search");
-        } else if (serverName.equals("ddg_search")) {
-            log.warn("DDG Search unavailable — search will fall back to SearXNG and Web Search");
+            log.warn("SearXNG unavailable — search will fall back to Web Search MCP");
         } else if (serverName.equals("web_search")) {
             log.warn("Web Search MCP server unavailable — search will use local tools as fallback");
         } else if (serverName.equals("excalidraw")) {
@@ -45,10 +43,7 @@ public class McpClientErrorHandler {
      */
     public String getNextSearchFallback(String failedServer) {
         if (failedServer.equals("searxng")) {
-            log.info("Falling back from SearXNG to DDG Search");
-            return "ddg_search";
-        } else if (failedServer.equals("ddg_search")) {
-            log.info("Falling back from DDG Search to Web Search MCP server");
+            log.info("Falling back from SearXNG to Web Search MCP");
             return "web_search";
         } else if (failedServer.equals("web_search")) {
             log.warn("All search providers unavailable — falling back to local tools");
@@ -87,8 +82,6 @@ public class McpClientErrorHandler {
                 return checkSearXNGAvailability();
             case "web_search":
                 return checkWebSearchAvailability();
-            case "ddg_search":
-                return true; // DDG Search always available (no external dependency)
             default:
                 return false;
         }
@@ -122,8 +115,6 @@ public class McpClientErrorHandler {
         
         sb.append("web_search: ").append(isMcpServerAvailable("web_search") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
         sb.append("searxng:    ").append(isMcpServerAvailable("searxng") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
-        sb.append("ddg_search: AVAILABLE (always available)\n");
-        sb.append("excalidraw: UNKNOWN (requires manual verification)\n");
         
         sb.append("================================\n");
         return sb.toString();
