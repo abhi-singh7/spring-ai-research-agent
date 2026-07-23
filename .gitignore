@@ -51,5 +51,10 @@ dist/
 .angular/
 node_modules/
 
+# === MCP Tool Servers and Local Dev Tools ===
+.opencode/
+**/mcp*/node_modules/
+.claude/
+
 # === Ollama (if used locally) ===
 ollama_models/

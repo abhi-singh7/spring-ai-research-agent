@@ -10,9 +10,6 @@ import { MarkdownModule } from 'ngx-markdown';
     <mat-card class="report-card">
       <mat-card-header>
         <mat-card-title>Research Report</mat-card-title>
-        @if (title()) {
-          <mat-card-subtitle>{{ title() }}</mat-card-subtitle>
-        }
       </mat-card-header>
       <mat-card-content class="report-content">
         <!-- Rendered markdown (block-level for proper heading styling) -->
@@ -21,6 +18,15 @@ import { MarkdownModule } from 'ngx-markdown';
     </mat-card>
   `,
   styles: [`
+    :host ::ng-deep .markdown-body h1,
+    :host ::ng-deep markdown h1 { color: #0f0f23; font-weight: 700; margin-bottom: 16px; }
+
+    :host ::ng-deep .markdown-body h2,
+    :host ::ng-deep markdown h2 { color: #1a1a2e; font-weight: 600; }
+
+    :host ::ng-deep .markdown-body h3,
+    :host ::ng-deep markdown h3 { color: #1a1a2e; font-weight: 600; }
+
     .report-content { padding: 16px; line-height: 1.7; max-width: 900px; margin: 0 auto; }
   `]
 })

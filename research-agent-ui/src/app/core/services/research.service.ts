@@ -56,6 +56,7 @@ export class ResearchService {
 
   // SSE Connection (Primary method)
   private sseSource: EventSource | null = null;
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Connect to the SSE stream for a given session */
   connectSse(sessionId: string, streamUrl?: string): void {
@@ -66,30 +67,38 @@ export class ResearchService {
     this.isStreaming.set(true);
 
     // PROGRESS events - update the active step and progress
-    this.sseSource.addEventListener('PROGRESS', (event) => {
-      const data: ResearchModels.ProgressSseEvent = JSON.parse(event.data);
+    this.sseSource.addEventListener('PROGRESS', (event: unknown) => {
+      const data: ResearchModels.ProgressSseEvent = JSON.parse((event as MessageEvent).data);
       this.handleProgress(data);
     });
 
     // CONTENT events - streaming text content as it arrives
-    this.sseSource.addEventListener('CONTENT', (event) => {
-      const data: ResearchModels.ContentSseEvent = JSON.parse(event.data);
+    this.sseSource.addEventListener('CONTENT', (event: unknown) => {
+      const data: ResearchModels.ContentSseEvent = JSON.parse((event as MessageEvent).data);
       this.appendContent(data.payload);
     });
 
-    // REPORT_CHUNK events - accumulate the final report
-    this.sseSource.addEventListener('REPORT_CHUNK', (event) => {
-      const data: ResearchModels.ReportChunkSseEvent = JSON.parse(event.data);
+    // REPORT_CHUNK events - accumulate the final report and reset stall timer on every chunk
+    let lastChunkTime = 0;
+    this.sseSource.addEventListener('REPORT_CHUNK', (event: unknown) => {
+      const data: ResearchModels.ReportChunkSseEvent = JSON.parse((event as MessageEvent).data);
       this._reportContentSignal.update(content => content + data.payload);
+
+      // Reset the stall timer on every chunk arrival — LLMs stream slowly on local models
+      lastChunkTime = Date.now();
+      if (this.stallTimer) {
+        clearTimeout(this.stallTimer);
+      }
+      this.startStallTimer(sessionId);
     });
 
     // REPORT_DONE events - full report is ready
-    this.sseSource.addEventListener('REPORT_DONE', (event) => {
-      const data: ResearchModels.ReportDoneSseEvent = JSON.parse(event.data);
+    this.sseSource.addEventListener('REPORT_DONE', (event: unknown) => {
+      const data: ResearchModels.ReportDoneSseEvent = JSON.parse((event as MessageEvent).data);
       this._reportContentSignal.set(data.payload);
-      
+      this.clearStallTimer();
+
       // Only update steps if session status hasn't been changed by polling yet
-      // (e.g., polling may have already set it to FAILED/CANCELLED)
       const currentSessionStatus = this.researchSession()?.status;
       if (!currentSessionStatus || currentSessionStatus === 'PROCESSING') {
         this._researchStepsSignal.update(prev => prev.map(s => ({
@@ -97,27 +106,29 @@ export class ResearchService {
           status: (s.status === 'IN_PROGRESS' ? 'COMPLETED' as ResearchModels.ResearchStep['status'] : s.status)
         })));
       }
-      
+
       // Update session status to COMPLETED regardless of previous state
       this.researchSession.update(s => s ? ({ ...s, status: 'COMPLETED' }) : null);
+      // Stop streaming — report is fully received, no more events expected
+      this.isStreaming.set(false);
     });
 
     // STEP_COMPLETE events - mark a step as complete
-    this.sseSource.addEventListener('STEP_COMPLETE', (event) => {
-      const data: ResearchModels.StepCompleteSseEvent = JSON.parse(event.data);
+    this.sseSource.addEventListener('STEP_COMPLETE', (event: unknown) => {
+      const data: ResearchModels.StepCompleteSseEvent = JSON.parse((event as MessageEvent).data);
       this.handleStepComplete(data);
     });
 
     // ERROR events - handle errors from the backend
-    this.sseSource.addEventListener('ERROR', (event) => {
-      const data: ResearchModels.ErrorSseEvent = JSON.parse(event.data);
+    this.sseSource.addEventListener('ERROR', (event: unknown) => {
+      const data: ResearchModels.ErrorSseEvent = JSON.parse((event as MessageEvent).data);
       this.errorSubject.next(data.payload);
       this.researchSession.update(s => s ? ({ ...s, status: 'FAILED' }) : null);
     });
 
-    // REPORT_START events - report generation has begun
-    this.sseSource.addEventListener('REPORT_START', (event) => {
-      const data: ResearchModels.ReportStartSseEvent = JSON.parse(event.data);
+    // REPORT_START events - report generation has begun (start stall timer)
+    this.sseSource.addEventListener('REPORT_START', (event: unknown) => {
+      const data: ResearchModels.ReportStartSseEvent = JSON.parse((event as MessageEvent).data);
       let steps = this.researchSteps();
 
       if (!steps.some(s => s.name === 'Generating Report')) {
@@ -127,7 +138,7 @@ export class ResearchService {
           this._researchStepsSignal.set([]);
           steps = [];
         }
-        
+
         // Mark any remaining IN_PROGRESS sub-topic steps as COMPLETED before adding report step
         const inProgressSubTopics = steps.filter(s => s.status === 'IN_PROGRESS');
         if (inProgressSubTopics.length > 0) {
@@ -135,15 +146,14 @@ export class ResearchService {
             ...s,
             status: (s.status === 'IN_PROGRESS' ? 'COMPLETED' : s.status) as ResearchModels.ResearchStep['status']
           })));
-          steps = this.researchSteps(); // re-read after update
         }
-        
+
         this._researchStepsSignal.update(prev => [
           ...prev,
           { stepNumber: prev.length + 1, name: 'Generating Report', status: 'IN_PROGRESS' as ResearchModels.ResearchStep['status'] }
         ]);
       } else if (steps.some(s => s.name === 'Generating Report')) {
-        // "Generating Report" already exists — update its description and ensure IN_PROGRESS
+        // "Generating Report" already exists — ensure IN_PROGRESS
         const idx = steps.findIndex(s => s.name === 'Generating Report');
         if (idx >= 0) {
           this._researchStepsSignal.update(prev => prev.map((s, i) =>
@@ -161,6 +171,9 @@ export class ResearchService {
           status: (i === prevInProgressIdx ? 'COMPLETED' : s.status) as ResearchModels.ResearchStep['status']
         })));
       }
+
+      // Start stall timer — if no REPORT_CHUNK arrives within 30s, force completion via polling
+      this.startStallTimer(sessionId);
     });
 
     // Open event - connection established
@@ -168,14 +181,44 @@ export class ResearchService {
       console.log('[ResearchService] SSE connected for session:', sessionId);
     });
 
-    // Error / reconnect handling
+    // Error / reconnect handling with exponential backoff
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 3;
+
     const onError = () => {
       if (this.sseSource && this.sseSource.readyState === EventSource.CLOSED) {
         console.warn('[ResearchService] SSE connection closed for session:', sessionId);
+        this.clearStallTimer();
         this.isStreaming.set(false);
         const currentSession = this.researchSession();
-        if (currentSession && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentSession.status)) {
-          this.errorSubject.next('SSE connection lost — session may still be running.');
+
+        // If we're in a terminal state, no need to reconnect or poll
+        if (currentSession && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentSession.status)) {
+          return;
+        }
+
+        // Try reconnection with exponential backoff before falling back to polling
+        if (reconnectAttempts < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 8000); // 1s, 2s, 4s, capped at 8s
+          console.info(`[ResearchService] Attempting SSE reconnection in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})...`);
+
+          this.errorSubject.next('Connection lost — reconnecting...');
+
+          setTimeout(() => {
+            if (this.researchSession()?.status === 'PROCESSING') {
+              try {
+                this.connectSse(sessionId);
+                reconnectAttempts = 0; // Reset on successful reconnection
+                console.info('[ResearchService] SSE reconnected successfully');
+              } catch {
+                reconnectAttempts++;
+              }
+            }
+          }, delay);
+        } else {
+          // Exhausted reconnection attempts — fall back to polling
+          console.warn('[ResearchService] Max SSE reconnection attempts reached, falling back to polling.');
+          this.errorSubject.next('Connection unstable — switching to background polling.');
           this.startPolling(sessionId);
         }
       } else {
@@ -191,10 +234,28 @@ export class ResearchService {
 
   /** Disconnect the current SSE connection */
   disconnectSse(): void {
+    this.clearStallTimer();
     if (this.sseSource) {
       this.sseSource.close();
       this.sseSource = null;
       this.isStreaming.set(false);
+    }
+  }
+
+  // Stall detection: if no REPORT_CHUNK arrives within 90s of report start, force completion via polling
+  private startStallTimer(sessionId: string): void {
+    this.clearStallTimer();
+    this.stallTimer = setTimeout(() => {
+      console.warn('[ResearchService] Report generation stalled — forcing completion via polling.');
+      this.errorSubject.next('Report generation is taking longer than expected. Checking status in background...');
+      this.startPolling(sessionId);
+    }, 90000);
+  }
+
+  private clearStallTimer(): void {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
     }
   }
 
@@ -208,6 +269,7 @@ export class ResearchService {
   }
 
   stopPolling(): void {
+    this.clearStallTimer();
     if (this.pollingTimer) {
       clearInterval(this.pollingTimer);
       this.pollingTimer = null;
@@ -218,7 +280,7 @@ export class ResearchService {
     this.getStatus(sessionId).subscribe({
       next: (session) => {
         const wasTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(this.researchSession()?.status ?? '');
-        
+
         // Sync steps from backend when session is in terminal state and wasn't already
         if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(session.status) && !wasTerminal) {
           const newSteps = (session as any).steps?.map((step: any, i: number) => ({
@@ -229,9 +291,17 @@ export class ResearchService {
           })) ?? [];
           if (newSteps.length > 0) {
             this._researchStepsSignal.set(newSteps);
+          } else {
+            // No steps from backend — clear dangling frontend-only steps (e.g., stuck "Generating Report")
+            this._researchStepsSignal.set([]);
+          }
+
+          // If session is COMPLETED and has a final report, sync it into the signal too
+          if ((session as any).finalReport) {
+            this._reportContentSignal.set((session as any).finalReport);
           }
         }
-        
+
         this.researchSession.set(session);
         if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(session.status)) {
           this.stopPolling();
@@ -242,7 +312,8 @@ export class ResearchService {
     });
   }
 
-  private getStepName(type?: string): string {
+  /** Convert backend step type to human-readable name */
+  getStepName(type?: string): string {
     const nameMap: Record<string, string> = {
       BREAKDOWN: 'Breakdown',
       SUBTOPIC: 'Sub-topic',
@@ -302,8 +373,27 @@ export class ResearchService {
     });
   }
 
+  /** Convert backend HistoryDetailStep[] to frontend ResearchStep[] and sync into signal */
+  setStepsFromHistory(steps: Array<{ orderIndex: number; type?: string; status: string; content?: string }>): void {
+    if (!steps || steps.length === 0) return;
+    const newSteps = steps.map((step, i) => ({
+      stepNumber: step.orderIndex + 1,
+      name: this.getStepName(step.type),
+      status: step.status as ResearchModels.ResearchStep['status'],
+      description: step.content || ''
+    }));
+    this._researchStepsSignal.set(newSteps);
+  }
+
   getHistoricalSession(sessionId: string): Observable<ResearchModels.ResearchSession> {
-    return this.http.get<ResearchModels.ResearchSession>(`${this.baseUrl}/history/${sessionId}`);
+    return new Observable(observer => {
+      this.http.get<any>(`${this.baseUrl}/history/${sessionId}`).subscribe({
+        next: (session) => {
+          observer.next(session as ResearchModels.ResearchSession);
+        },
+        error: err => observer.error(err)
+      });
+    });
   }
 
   submitFollowUp(sessionId: string, question: string): Observable<string> {

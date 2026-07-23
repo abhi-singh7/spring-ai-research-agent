@@ -6,7 +6,7 @@ spring:
       base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
       chat:
         options:
-          model: ${LLM_MODEL:google/ornith-1.0-35b}
+          model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
     mcp:

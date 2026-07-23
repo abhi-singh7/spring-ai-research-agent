@@ -12,64 +12,87 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
   imports: [MatCardModule, MatFormFieldModule, MatInputModule, MatButtonModule, RouterLink],
   template: `
     <div class="research-history-container">
-      <h2>Research History</h2>
+      <!-- Header -->
+      <div class="page-header" [@fadeIn]>
+        <h2>Research History</h2>
+        <span class="session-count">{{ totalElements() }} session{{ totalElements() === 1 ? '' : 's' }}</span>
+      </div>
 
       <!-- Search bar -->
       <mat-form-field appearance="outline" class="full-width search-bar">
         <mat-label>Search topics...</mat-label>
-        <input matInput placeholder="Search by topic..." (keyup)="onSearch($event)" />
+        <input matInput placeholder="Filter by topic..." (keyup)="onSearch($event)" />
       </mat-form-field>
 
       <!-- Session list -->
       @if (sessions().length > 0) {
         <div class="session-list">
           @for (item of sessions(); track item.id) {
-            <mat-card class="history-item" [routerLink]="['/research/history', item.id]">
-              <mat-card-content>
-                <span class="topic">{{ item.topic }}</span>
-                <span class="status-chip" [class.pending]="item.status === 'PENDING'"
-                      [class.processing]="item.status === 'PROCESSING'"
-                      [class.completed]="item.status === 'COMPLETED'"
-                      [class.failed]="item.status === 'FAILED'"
-                      [class.cancelled]="item.status === 'CANCELLED'">
-                  {{ item.status }}
-                </span>
-              </mat-card-content>
-              <mat-card-actions class="history-item-actions" align="end">
-                @if (item.createdAt) {
-                  <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
-                }
-                @if (item.completedAt && item.status === 'COMPLETED') {
-                  <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-                }
-              </mat-card-actions>
-            </mat-card>
+            <a [routerLink]="['/research/history', item.id]" class="history-item" [@fadeIn]>
+              <mat-card class="item-card">
+                <mat-card-content>
+                  <span class="topic">{{ item.topic }}</span>
+                  <span class="status-chip" [class.pending]="item.status === 'PENDING'"
+                        [class.processing]="item.status === 'PROCESSING'"
+                        [class.completed]="item.status === 'COMPLETED'"
+                        [class.failed]="item.status === 'FAILED'"
+                        [class.cancelled]="item.status === 'CANCELLED'">
+                    {{ getStatusLabel(item.status) }}
+                  </span>
+                </mat-card-content>
+                <mat-card-actions class="history-item-actions" align="end">
+                  @if (item.createdAt) {
+                    <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                  }
+                  @if (item.completedAt && item.status === 'COMPLETED') {
+                    <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                  }
+                </mat-card-actions>
+              </mat-card>
+            </a>
           }
         </div>
       } @else {
-        <p class="empty-state">No research history found. Start a new research to see it here.</p>
+        <div class="empty-state" [@fadeIn]>
+          <p>No research history found.</p>
+          <a routerLink="/" mat-raised-button color="primary">Start New Research</a>
+        </div>
       }
 
       <!-- Pagination -->
       @if (totalPages() > 1) {
-        <div class="pagination">
-          <button mat-button [disabled]="currentPage() <= 0" (click)="loadPage(currentPage() - 1)">← Previous</button>
-          <span class="page-info">{{ currentPage() + 1 }} / {{ totalPages() }}</span>
-          <button mat-button [disabled]="currentPage() >= totalPages() - 1" (click)="loadPage(currentPage() + 1)">Next →</button>
+        <div class="pagination" [@fadeIn]>
+          <button mat-stroked-button [disabled]="currentPage() <= 0" (click)="loadPage(currentPage() - 1)">Previous</button>
+          <span class="page-info">Page {{ currentPage() + 1 }} of {{ totalPages() }}</span>
+          <button mat-stroked-button [disabled]="currentPage() >= totalPages() - 1" (click)="loadPage(currentPage() + 1)">Next</button>
         </div>
       }
     </div>
   `,
   styles: [`
     .research-history-container { padding: 24px; max-width: 1000px; margin: 0 auto; }
-    .search-bar { width: 100%; margin-bottom: 24px; }
-    .session-list { display: flex; flex-direction: column; gap: 8px; }
-    .history-item { cursor: pointer; transition: box-shadow 0.2s; }
-    .history-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-    .topic { font-weight: 500; }
-    .status-chip { padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; margin-left: auto; }
 
-    /* Light mode status chip colors */
+    /* Page header */
+    .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+    .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; color: #0f0f23 !important; }
+    .session-count { font-size: 0.9rem; color: #1a1a2e !important; font-weight: 400; }
+
+    /* Search bar */
+    .search-bar { width: 100%; margin-bottom: 24px; }
+
+    /* Session list */
+    .session-list { display: flex; flex-direction: column; gap: 10px; }
+
+    /* History item card */
+    a.history-item { text-decoration: none; color: inherit; }
+    .item-card { border-radius: 12px !important; overflow: hidden; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); cursor: pointer; }
+    .item-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12); }
+
+    mat-card-content { display: flex; align-items: center; gap: 16px; padding: 14px 18px !important; }
+    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Status chip */
+    .status-chip { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.3px; flex-shrink: 0; transition: all 0.3s ease; }
     .pending { background-color: #fff3e0; color: #ef6c00; }
     .processing { background-color: #e3f2fd; color: #1565c0; }
     .completed { background-color: #e8f5e9; color: #2e7d32; }
@@ -78,6 +101,8 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
 
     /* Dark mode status chip colors */
     @media (prefers-color-scheme: dark) {
+      .page-header h2 { color: #e0e0e0; }
+      .topic { color: #e0e0e0; }
       .pending { background-color: rgba(255, 183, 77, 0.2); color: #ffb74d; }
       .processing { background-color: rgba(66, 165, 245, 0.2); color: #42a5f5; }
       .completed { background-color: rgba(102, 187, 106, 0.2); color: #66bb6a; }
@@ -85,21 +110,29 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
       .cancelled { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
     }
 
-    .empty-state { text-align: center; color: #999; padding: 40px; }
-    .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; }
-    .page-info { font-size: 0.85rem; color: #666; }
+    /* Card actions */
+    .history-item-actions { padding-right: 16px !important; display: flex; align-items: center; gap: 16px; }
+    .date-info, .completed-info { font-size: 0.8rem; color: #1a1a2e !important; white-space: nowrap; }
 
+    /* Empty state */
+    .empty-state { text-align: center; padding: 48px 24px; color: #1a1a2e !important; }
+    .empty-state p { margin-bottom: 16px; font-size: 1rem; }
+
+    /* Pagination */
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; padding: 16px 0; }
+    .page-info { font-size: 0.85rem; color: #1a1a2e !important; font-weight: 500; min-width: 120px; text-align: center; }
+
+    /* Dark mode pagination */
     @media (prefers-color-scheme: dark) {
-      .empty-state { color: #9e9e9e; }
+      .empty-state p { color: #9e9e9e; }
       .page-info { color: #bdbdbd; }
     }
+
+    /* Fade in animation */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
   `]
 })
 export class ResearchHistoryComponent implements OnInit {
-
-  constructor() {
-  console.log('ResearchHistoryComponent constructor');
-}
 
   private historyService = inject(ResearchHistoryService);
 
@@ -109,15 +142,14 @@ export class ResearchHistoryComponent implements OnInit {
   totalElements = this.historyService.totalElements;
 
   ngOnInit(): void {
-    console.log('[ResearchHistoryComponent] Initializing and loading history...');
     this.historyService.loadHistory();
   }
 
-  getStatusClass(status: string): string {
-    const classes: Record<string, string> = {
-      PENDING: 'pending', PROCESSING: 'processing', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled'
+  getStatusLabel(status: string): string {
+    const labels: Record<string, string> = {
+      PENDING: 'Pending', PROCESSING: 'Processing...', COMPLETED: 'Completed', FAILED: 'Failed', CANCELLED: 'Cancelled'
     };
-    return classes[status] || '';
+    return labels[status] || status;
   }
 
   formatDateTime(dateStr: string): string {
