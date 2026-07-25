@@ -86,8 +86,8 @@ public class ResearchOrchestratorService {
                     .call()
                     .content();
 
-            // Parse sub-topics from the LLM response (strip markdown code fences first)
-            String jsonContent = stripMarkdownCodeFences(breakdownResult);
+            // Parse sub-topics from the LLM response (extract JSON, stripping markdown code fences and any surrounding text)
+            String jsonContent = extractJsonFromMarkdown(breakdownResult);
 
             // Parse sub-topics from the LLM response
             List<SubTopic> subTopics;
@@ -100,9 +100,11 @@ public class ResearchOrchestratorService {
                 subTopics = List.of(new SubTopic(1, fallbackTitle, jsonContent));
             }
 
-            // Save BREAKDOWN step (cascade will persist it)
-            session.addStep(saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", breakdownResult));
+            // Save BREAKDOWN step and persist immediately so REST API returns real-time progress
+            ResearchStep breakdownStep = saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", breakdownResult);
+            session.addStep(breakdownStep);
             streamService.sendProgress(sessionId, "Topic broken down into " + subTopics.size() + " sub-topics");
+            sessionRepo.save(session); // Persist BREAKDOWN step
 
             log.info("Breakdown complete: {} sub-topics found for session {}", subTopics.size(), sessionId);
 
@@ -133,8 +135,10 @@ public class ResearchOrchestratorService {
 
                 allFindings.add("## Sub-Topic: " + subTopic.getTitle() + "\n\n" + response);
 
-                session.addStep(saveStep(session, i + 1, StepType.SUBTOPIC, "COMPLETED", response));
+                ResearchStep subtopicStep = saveStep(session, i + 1, StepType.SUBTOPIC, "COMPLETED", response);
+                session.addStep(subtopicStep);
                 streamService.sendProgress(sessionId, "Completed research on: " + subTopic.getTitle());
+                sessionRepo.save(session); // Persist each SUBTOPIC step incrementally
             }
 
             // --- Step 3: Generate final report (with streaming) ---
@@ -288,16 +292,28 @@ public class ResearchOrchestratorService {
     }
 
     /**
-     * Strip markdown code fences from LLM responses that wrap JSON in ```json ... ```.
+     * Extract JSON content from LLM responses that wrap it in markdown code fences.
+     * Handles cases where the LLM adds explanatory text before/after the fence.
      */
-    private String stripMarkdownCodeFences(String content) {
+    private String extractJsonFromMarkdown(String content) {
         if (content == null) {
             return "";
         }
+
+        // Try to find JSON inside ```json ... ``` or ``` ... ``` fences first
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("```\\w*\\s*(\\[{].+[}\\]]+)\\s*```", java.util.regex.Pattern.DOTALL).matcher(content);
+        if (matcher.find()) {
+            String json = matcher.group(1).trim();
+            // Validate it looks like JSON by checking first char is [ or {
+            if (!json.isEmpty() && (json.charAt(0) == '[' || json.charAt(0) == '{')) {
+                return json;
+            }
+        }
+
+        // Fallback: strip fences from the raw content (original behavior for edge cases)
         String trimmed = content.trim();
 
         // Remove opening fence: ``` or ```json or ```java etc.
-        // Pattern matches optional backticks followed by a language identifier and newline
         trimmed = trimmed.replaceAll("^```\\w*\\s*\n?", "");
 
         // Remove closing fence: ``` possibly preceded by whitespace/newline
