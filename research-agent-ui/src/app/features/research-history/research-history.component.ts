@@ -5,17 +5,78 @@ import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { RouterLink } from '@angular/router';
 import { ResearchHistoryService } from '../../core/services/research-history.service';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatSnackBarModule, MatSnackBar } from '@angular/material/snack-bar';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 
+/**
+ * Reusable delete confirmation dialog.
+ */
+@Component({
+  selector: 'app-delete-confirmation',
+  standalone: true,
+  imports: [MatDialogModule],
+  template: `
+    <h2 mat-dialog-title>Delete Confirmation</h2>
+    <mat-dialog-content class="delete-confirm-content">
+      <p>{{ data.message }}</p>
+      @if (data.topics?.length > 0) {
+        <div class="topic-list">
+          @for (topic of data.topics; track topic) {
+            <span class="topic-item">{{ topic }}</span>
+          }
+        </div>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end" class="delete-confirm-actions">
+      <button mat-stroked-button color="primary" (click)="dialogRef.close(false)">Cancel</button>
+      <button mat-raised-button color="warn" (click)="dialogRef.close(true)">Delete Permanently</button>
+    </mat-dialog-actions>
+  `,
+  styles: [`
+    .delete-confirm-content { min-width: 300px; max-width: 500px; }
+    .topic-list { margin-top: 12px; padding-left: 8px; border-left: 2px solid #ccc; }
+    @media (prefers-color-scheme: dark) { .topic-list { border-left-color: #555; } }
+    .topic-item { display: block; font-size: 0.85rem; color: #666; padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
+    @media (prefers-color-scheme: dark) { .topic-item { color: #aaa; } }
+    :host ::ng-deep .mat-dialog-container { border-radius: 12px !important; padding: 0 !important; overflow: hidden; }
+  `]
+})
+class DeleteConfirmationDialogComponent {
+  
+}
+
+interface DeleteConfirmData {
+  message: string;
+  topics?: string[];
+}
+
+/**
+ * Main research history component.
+ * Features: pagination, search, single delete (MatDialog), bulk multi-select delete (Approach A).
+ */
 @Component({
   selector: 'app-research-history',
   standalone: true,
-  imports: [MatCardModule, MatFormFieldModule, MatInputModule, MatButtonModule, RouterLink],
+  imports: [
+    MatCardModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatButtonModule,
+    RouterLink,
+    MatDialogModule,
+    MatSnackBarModule,
+    MatCheckboxModule,
+  ],
   template: `
     <div class="research-history-container">
-      <!-- Header -->
+
+      <!-- Page header -->
       <div class="page-header" [@fadeIn]>
         <h2>Research History</h2>
-        <span class="session-count">{{ totalElements() }} session{{ totalElements() === 1 ? '' : 's' }}</span>
+        @if (!hasSelection()) {
+          <span class="session-count">{{ totalElements() }} session{{ totalElements() === 1 ? '' : 's' }}</span>
+        }
       </div>
 
       <!-- Search bar -->
@@ -24,22 +85,39 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
         <input matInput placeholder="Filter by topic..." (keyup)="onSearch($event)" />
       </mat-form-field>
 
-      <!-- Session list -->
-      @if (sessions().length > 0) {
+      <!-- Action toolbar — shown when items are selected -->
+      @if (hasSelection()) {
+        <div class="action-toolbar" [@fadeIn]>
+          <span class="selection-count">{{ selectionCount() }} selected</span>
+          <button mat-stroked-button color="warn" class="delete-btn" [disabled]="!hasSelection()"
+                  (click)="onBulkDelete()">
+            Delete Selected
+          </button>
+        </div>
+      }
+
+      <!-- ---- Normal view: single cards with delete button per item ---- -->
+      @if (!hasSelection() && sessions().length > 0) {
         <div class="session-list">
           @for (item of sessions(); track item.id) {
             <a [routerLink]="['/research/history', item.id]" class="history-item" [@fadeIn]>
               <mat-card class="item-card">
                 <mat-card-content>
-                  <span class="topic">{{ item.topic }}</span>
-                  <span class="status-chip" [class.pending]="item.status === 'PENDING'"
-                        [class.processing]="item.status === 'PROCESSING'"
-                        [class.completed]="item.status === 'COMPLETED'"
-                        [class.failed]="item.status === 'FAILED'"
-                        [class.cancelled]="item.status === 'CANCELLED'">
-                    {{ getStatusLabel(item.status) }}
-                  </span>
+                  <!-- Topic + status row -->
+                  <div class="topic-row">
+                    <span class="topic">{{ item.topic }}</span>
+                    <span class="status-chip"
+                          [class.pending]="item.status === 'PENDING'"
+                          [class.processing]="item.status === 'PROCESSING'"
+                          [class.completed]="item.status === 'COMPLETED'"
+                          [class.failed]="item.status === 'FAILED'"
+                          [class.cancelled]="item.status === 'CANCELLED'">
+                      {{ getStatusLabel(item.status) }}
+                    </span>
+                  </div>
                 </mat-card-content>
+
+                <!-- Footer: date + delete button -->
                 <mat-card-actions class="history-item-actions" align="end">
                   @if (item.createdAt) {
                     <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
@@ -47,12 +125,66 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
                   @if (item.completedAt && item.status === 'COMPLETED') {
                     <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
                   }
+                  <!-- Inline delete button — stops propagation so it doesn't navigate to detail view -->
+                  <button mat-icon-button color="warn"
+                          (click)="onDeleteSingle(item, $event)"
+                          [attr.aria-label]="'Delete research session: ' + item.topic">
+                    X
+                  </button>
                 </mat-card-actions>
               </mat-card>
             </a>
           }
         </div>
-      } @else {
+      }
+
+      <!-- ---- Selection view: checkboxes on each card with delete button per item ---- -->
+      @if (hasSelection()) {
+        <div class="session-list">
+          @for (item of sessions(); track item.id) {
+            <mat-card class="item-card" [@fadeIn] [class.selected]="isSelected(item.id)">
+
+              <!-- Selection row: checkbox + topic + status -->
+              <div class="selection-row">
+                <mat-checkbox class="session-checkbox"
+                              (change)="toggleSelect($event, item)"
+                              [checked]="isSelected(item.id)"></mat-checkbox>
+                <div class="topic-info">
+                  <span class="topic">{{ item.topic }}</span>
+                  <span class="status-chip"
+                        [class.pending]="item.status === 'PENDING'"
+                        [class.processing]="item.status === 'PROCESSING'"
+                        [class.completed]="item.status === 'COMPLETED'"
+                        [class.failed]="item.status === 'FAILED'"
+                        [class.cancelled]="item.status === 'CANCELLED'">
+                    {{ getStatusLabel(item.status) }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Footer: date + delete button -->
+              <mat-card-actions class="history-item-actions" align="end">
+                @if (item.createdAt) {
+                  <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                }
+                @if (item.completedAt && item.status === 'COMPLETED') {
+                  <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                }
+                <!-- Inline delete button per item -->
+                <button mat-icon-button color="warn"
+                        (click)="onDeleteSingle(item, $event)"
+                        [attr.aria-label]="'Delete research session: ' + item.topic">
+                  X
+                </button>
+              </mat-card-actions>
+
+            </mat-card>
+          }
+        </div>
+      }
+
+      <!-- Empty state -->
+      @if (sessions().length === 0 && !hasSelection()) {
         <div class="empty-state" [@fadeIn]>
           <p>No research history found.</p>
           <a routerLink="/" mat-raised-button color="primary">Start New Research</a>
@@ -60,38 +192,58 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
       }
 
       <!-- Pagination -->
-      @if (totalPages() > 1) {
+      @if (!hasSelection() && totalPages() > 1) {
         <div class="pagination" [@fadeIn]>
           <button mat-stroked-button [disabled]="currentPage() <= 0" (click)="loadPage(currentPage() - 1)">Previous</button>
           <span class="page-info">Page {{ currentPage() + 1 }} of {{ totalPages() }}</span>
           <button mat-stroked-button [disabled]="currentPage() >= totalPages() - 1" (click)="loadPage(currentPage() + 1)">Next</button>
         </div>
       }
+
     </div>
   `,
   styles: [`
     .research-history-container { padding: 24px; max-width: 1000px; margin: 0 auto; }
 
-    /* Page header */
+    /* ---- Page header ---- */
     .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
     .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; color: #0f0f23 !important; }
     .session-count { font-size: 0.9rem; color: #1a1a2e !important; font-weight: 400; }
 
-    /* Search bar */
+    /* ---- Search bar ---- */
     .search-bar { width: 100%; margin-bottom: 24px; }
 
-    /* Session list */
+    /* ---- Action toolbar ---- */
+    .action-toolbar {
+      display: flex; align-items: center; gap: 16px; padding: 12px 18px;
+      background-color: #f5f5f5; border-radius: 8px; margin-bottom: 16px; min-height: 44px;
+    }
+    @media (prefers-color-scheme: dark) { .action-toolbar { background-color: #333; } }
+    .selection-count { font-size: 0.95rem; font-weight: 500; color: #1a1a2e !important; flex-shrink: 0; }
+    @media (prefers-color-scheme: dark) { .selection-count { color: #eee; } }
+    .delete-btn { padding: 0 24px; min-width: auto; font-weight: 500; letter-spacing: 0.3px; transition: all 0.2s ease; }
+
+    /* ---- Session list ---- */
     .session-list { display: flex; flex-direction: column; gap: 10px; }
 
-    /* History item card */
+    /* ---- Normal view card ---- */
     a.history-item { text-decoration: none; color: inherit; }
     .item-card { border-radius: 12px !important; overflow: hidden; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); cursor: pointer; }
     .item-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12); }
 
-    mat-card-content { display: flex; align-items: center; gap: 16px; padding: 14px 18px !important; }
-    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* ---- Selected card styling ---- */
+    .item-card.selected { border-left: 3px solid #6750a0 !important; background-color: rgba(103, 80, 160, 0.05) !important; }
+    @media (prefers-color-scheme: dark) { .item-card.selected { background-color: rgba(103, 80, 160, 0.1) !important; } }
 
-    /* Status chip */
+    /* ---- Topic row ---- */
+    .topic-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+    .topic-info { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+
+    /* ---- Selection row (checkbox + topic) ---- */
+    .selection-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px 0 14px; }
+
+    /* ---- Status chip ---- */
     .status-chip { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.3px; flex-shrink: 0; transition: all 0.3s ease; }
     .pending { background-color: #fff3e0; color: #ef6c00; }
     .processing { background-color: #e3f2fd; color: #1565c0; }
@@ -99,7 +251,6 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
     .failed { background-color: #ffebee; color: #c62828; }
     .cancelled { background-color: #fafafa; color: #424242; border: 1px solid #bdbdbd; }
 
-    /* Dark mode status chip colors */
     @media (prefers-color-scheme: dark) {
       .page-header h2 { color: #e0e0e0; }
       .topic { color: #e0e0e0; }
@@ -110,40 +261,63 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
       .cancelled { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
     }
 
-    /* Card actions */
-    .history-item-actions { padding-right: 16px !important; display: flex; align-items: center; gap: 16px; }
+    /* ---- Card actions (footer) ---- */
+    .history-item-actions { padding-right: 16px !important; display: flex; align-items: center; gap: 12px; }
     .date-info, .completed-info { font-size: 0.8rem; color: #1a1a2e !important; white-space: nowrap; }
 
-    /* Empty state */
+    /* ---- Empty state ---- */
     .empty-state { text-align: center; padding: 48px 24px; color: #1a1a2e !important; }
     .empty-state p { margin-bottom: 16px; font-size: 1rem; }
 
-    /* Pagination */
+    /* ---- Pagination ---- */
     .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; padding: 16px 0; }
     .page-info { font-size: 0.85rem; color: #1a1a2e !important; font-weight: 500; min-width: 120px; text-align: center; }
 
-    /* Dark mode pagination */
     @media (prefers-color-scheme: dark) {
       .empty-state p { color: #9e9e9e; }
       .page-info { color: #bdbdbd; }
     }
 
-    /* Fade in animation */
+    /* ---- Fade in animation ---- */
     @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ---- Session checkbox (Material M3) ---- */
+    .session-checkbox::ng-deep .mat-mdc-checkbox-mat-persistent { position: relative !important; }
+    .session-checkbox { margin-right: 8px !important; flex-shrink: 0; display: inline-flex !important; align-items: center !important; vertical-align: middle !important; }
+    @media (prefers-color-scheme: dark) { .session-checkbox { color: #e0a5ff !important; } }
+
+    /* ---- Dark mode adjustments ---- */
+    @media (prefers-color-scheme: dark) {
+      .page-header h2 { color: #e0e0e0; }
+      .topic { color: #e0e0e0; }
+    }
   `]
 })
 export class ResearchHistoryComponent implements OnInit {
 
   private historyService = inject(ResearchHistoryService);
+  private dialog = inject(MatDialog);
+  private snackBar = inject(MatSnackBar);
 
   sessions = this.historyService.sessions;
   currentPage = this.historyService.currentPage;
   totalPages = this.historyService.totalPages;
   totalElements = this.historyService.totalElements;
 
+  /** Selection state — tracks selected session IDs */
+  private selectionSet: Set<string> = new Set();
+
+  /** Computed signal for selection count */
+  selectionCount = () => this.selectionSet.size;
+
+  /** Computed signal to check if any items are selected */
+  hasSelection = () => this.selectionSet.size > 0;
+
   ngOnInit(): void {
     this.historyService.loadHistory();
   }
+
+  // ---- Helpers ----
 
   getStatusLabel(status: string): string {
     const labels: Record<string, string> = {
@@ -161,6 +335,8 @@ export class ResearchHistoryComponent implements OnInit {
     });
   }
 
+  // ---- Navigation / search ----
+
   onSearch(event: Event): void {
     const input = (event.target as HTMLInputElement).value.trim();
     this.historyService.loadHistory(this.currentPage(), input);
@@ -170,4 +346,96 @@ export class ResearchHistoryComponent implements OnInit {
     const search = this.historyService.searchTerm?.trim() || '';
     this.historyService.loadHistory(page, search);
   }
+
+  // ---- Selection state management ----
+
+  isSelected(sessionId: string): boolean {
+    return this.selectionSet.has(sessionId);
+  }
+
+  toggleSelect(event: any, item: any): void {
+    if (event.checked) {
+      this.selectionSet.add(item.id);
+    } else {
+      this.selectionSet.delete(item.id);
+    }
+  }
+
+  // ---- Single session delete ----
+
+  /** Open confirmation dialog for deleting a single session. */
+  onDeleteSingle(item: any, event: Event): void {
+    // Prevent navigation to detail view when clicking the delete button
+    (event as Event).stopPropagation();
+
+    this.dialog.open(DeleteConfirmationDialogComponent, {
+      width: '480px',
+      maxWidth: '90vw',
+      data: {
+        message: `This will permanently delete "${item.topic}" and all its associated steps. This cannot be undone.`,
+        topics: [item.topic],
+      } as DeleteConfirmData,
+    }).afterClosed().subscribe((confirmed: boolean | undefined) => {
+      if (confirmed === true) {
+        this.historyService.deleteSession(item.id).subscribe({
+          next: () => {
+            this.snackBar.open('Session deleted successfully', 'Close', { duration: 3000, panelClass: ['success-snackbar'] });
+            // Reload current page to reflect deletion
+            const search = this.historyService.searchTerm?.trim() || '';
+            this.historyService.loadHistory(this.currentPage(), search);
+          },
+          error: (err) => {
+            console.error('[ResearchHistoryComponent] Single delete failed:', err);
+            if (err?.status === 409) {
+              this.snackBar.open('Cannot delete — session is still processing', 'Close', { duration: 5000, panelClass: ['error-snackbar'] });
+            } else {
+              this.snackBar.open(`Failed to delete session`, 'Close', { duration: 5000, panelClass: ['error-snackbar'] });
+            }
+          },
+        });
+      }
+    });
+  }
+
+  // ---- Bulk (multi-select) delete ----
+
+  /** Open confirmation dialog for bulk deleting selected sessions. */
+  onBulkDelete(): void {
+    const sessionIds = Array.from(this.selectionSet);
+    const topics = this.sessions()
+      .filter((s: any) => this.selectionSet.has(s.id))
+      .map((s: any) => s.topic);
+
+    this.dialog.open(DeleteConfirmationDialogComponent, {
+      width: '500px',
+      maxWidth: '90vw',
+      data: {
+        message: `This will permanently delete ${sessionIds.length} selected research session${sessionIds.length !== 1 ? 's' : ''}. This action cannot be undone.`,
+        topics: topics,
+      } as DeleteConfirmData,
+    }).afterClosed().subscribe((confirmed: boolean | undefined) => {
+      if (confirmed === true) {
+        this.historyService.bulkDeleteSessions(sessionIds).subscribe({
+          next: () => {
+            const plural = sessionIds.length !== 1 ? 's' : '';
+            this.snackBar.open(`${sessionIds.length} session${plural} deleted successfully`, 'Close', { duration: 3000, panelClass: ['success-snackbar'] });
+            // Clear selection and reload history list
+            this.selectionSet.clear();
+            const search = this.historyService.searchTerm?.trim() || '';
+            this.historyService.loadHistory(this.currentPage(), search);
+          },
+          error: (err) => {
+            console.error('[ResearchHistoryComponent] Bulk delete failed:', err);
+            if (err?.status === 409) {
+              this.snackBar.open('Cannot delete sessions — one or more are still processing. All operations rolled back.', 'Close', { duration: 5000, panelClass: ['error-snackbar'] });
+            } else {
+              const plural = sessionIds.length !== 1 ? 's' : '';
+              this.snackBar.open(`Failed to delete ${sessionIds.length} session${plural}`, 'Close', { duration: 5000, panelClass: ['error-snackbar'] });
+            }
+          },
+        });
+      }
+    });
+  }
+
 }

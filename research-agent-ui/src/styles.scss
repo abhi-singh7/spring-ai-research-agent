@@ -67,3 +67,26 @@ code {
 a, button, input, select, mat-form-field {
   transition: all 0.2s ease;
 }
+
+/* Snackbar panel classes for success/error states — Material M3 style */
+.success-snackbar::ng-deep .mdc-snackbar__surface {
+  background-color: #4caf50 !important; /* Green for success */
+  border-radius: 12px !important;
+}
+
+.error-snackbar::ng-deep .mdc-snackbar__surface {
+  background-color: #f44336 !important; /* Red for error */
+  border-radius: 12px !important;
+}
+
+/* Dark mode snackbar adjustments — let Material's dark theme handle it via panelClass, but override if needed */
+@media (prefers-color-scheme: dark) {
+  .success-snackbar::ng-deep .mdc-snackbar__surface { background-color: #2e7d32 !important; }
+  .error-snackbar::ng-deep .mdc-snackbar__surface { background-color: #c62828 !important; }
+}
+
+/* Ensure snackbar text is readable */
+.success-snackbar::ng-deep .mdc-button__label,
+.error-snackbar::ng-deep .mdc-button__label {
+  color: white !important;
+}

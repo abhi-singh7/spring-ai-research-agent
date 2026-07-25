@@ -20,6 +20,8 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class ResearchOrchestratorService {
@@ -74,11 +76,35 @@ public class ResearchOrchestratorService {
 
             // --- Step 1: Break down topic into sub-topics ---
             String breakdownPrompt = """
-                You are a research assistant. Given a research topic, break it down into %d distinct
-                sub-topics for thorough investigation. Return ONLY a JSON array with this structure:
-                [{"id": 1, "title": "...", "description": "..."}, ...]
-                Topic: %s
-                """.formatted(subTopicCount, request.getTopic());
+                    You are an expert research planner.
+                    
+                    Your task is to decompose the given research topic into exactly %d distinct, non-overlapping sub-topics that together provide comprehensive coverage of the subject.
+                    
+                    Requirements:
+                    - Produce exactly %d sub-topics.
+                    - Each sub-topic should cover a unique aspect of the research.
+                    - Avoid redundancy or overlapping scopes.
+                    - Ensure the combined sub-topics cover the topic comprehensively.
+                    - Titles should be concise (3–10 words).
+                    - Descriptions should clearly explain what should be investigated (1–3 sentences).
+                    - Include both foundational concepts and advanced or practical aspects when appropriate.
+                    - If the topic is broad, prioritise the most important research dimensions.
+                    - If the topic is narrow, split it into logical investigative components.
+                    - Do not include introductions, explanations, markdown, or code fences.
+                    
+                    Return ONLY valid JSON matching this schema:
+                    
+                    [
+                      {
+                        "id": 1,
+                        "title": "string",
+                        "description": "string"
+                      }
+                    ]
+                    
+                    Research Topic:
+                    "%s"
+                    """.formatted(subTopicCount, subTopicCount, request.getTopic());
 
             String breakdownResult = chatClient.prompt()
                     .system(breakdownPrompt)
@@ -92,7 +118,8 @@ public class ResearchOrchestratorService {
             // Parse sub-topics from the LLM response
             List<SubTopic> subTopics;
             try {
-                subTopics = objectMapper.readValue(jsonContent, new TypeReference<List<SubTopic>>() {});
+                subTopics = objectMapper.readValue(jsonContent, new TypeReference<List<SubTopic>>() {
+                });
             } catch (Exception e) {
                 log.error("Failed to parse sub-topic breakdown: {}", jsonContent, e);
                 // Fallback: create a single generic sub-topic from the response
@@ -116,14 +143,14 @@ public class ResearchOrchestratorService {
                 SubTopic subTopic = subTopics.get(i);
 
                 String subPrompt = """
-                    You are a research assistant. Follow these steps for your assigned topic:
-
-                    1. Use the search tool to find web pages about this topic
-                    2. For each relevant URL returned by search, use the read_url tool to fetch full page content
-                    3. Synthesize all gathered information into a structured summary with key points, evidence, and references
-
-                    Always use both tools — search alone only returns snippets. You MUST call read_url for any URLs that look relevant before synthesizing your answer.
-                    """;
+                        You are a research assistant. Follow these steps for your assigned topic:
+                        
+                        1. Use the search tool to find web pages about this topic
+                        2. For each relevant URL returned by search, use the read_url tool to fetch full page content
+                        3. Synthesize all gathered information into a structured summary with key points, evidence, and references
+                        
+                        Always use both tools — search alone only returns snippets. You MUST call read_url for any URLs that look relevant before synthesizing your answer.
+                        """;
 
                 streamService.sendProgress(sessionId, "Researching: " + subTopic.getTitle());
 
@@ -143,16 +170,16 @@ public class ResearchOrchestratorService {
 
             // --- Step 3: Generate final report (with streaming) ---
             String synthesisPrompt = """
-                You are an expert research analyst. Synthesize the collected findings into a comprehensive,
-                well-structured research report with the following sections:
-                - Executive Summary
-                - Introduction & Background
-                - Main Findings (organized by sub-topic)
-                - Key Insights & Analysis
-                - Conclusion
-
-                Use markdown formatting for headings, lists, and emphasis. Be thorough but concise.
-                """;
+                    You are an expert research analyst. Synthesize the collected findings into a comprehensive,
+                    well-structured research report with the following sections:
+                    - Executive Summary
+                    - Introduction & Background
+                    - Main Findings (organized by sub-topic)
+                    - Key Insights & Analysis
+                    - Conclusion
+                    
+                    Use markdown formatting for headings, lists, and emphasis. Be thorough but concise.
+                    """;
 
             String synthesisInput = "## Collected Sub-Topic Findings\n\n" + String.join("\n\n---\n\n", allFindings);
 
@@ -255,17 +282,17 @@ public class ResearchOrchestratorService {
 
         // Use the LLM to answer based on the final report content
         String prompt = """
-            You are a research assistant. The user has asked a follow-up question about a previous
-            research session. Answer based on the following research findings:
-
-            Topic: %s
-            Final Report: %s
-
-            Follow-up Question: %s
-
-            Provide a concise, well-reasoned answer based on the above content. If you cannot find
-            relevant information to answer the question, say so clearly.
-            """.formatted(session.getTopic(), session.getFinalReport() != null ? session.getFinalReport() : "No report available", question);
+                You are a research assistant. The user has asked a follow-up question about a previous
+                research session. Answer based on the following research findings:
+                
+                Topic: %s
+                Final Report: %s
+                
+                Follow-up Question: %s
+                
+                Provide a concise, well-reasoned answer based on the above content. If you cannot find
+                relevant information to answer the question, say so clearly.
+                """.formatted(session.getTopic(), session.getFinalReport() != null ? session.getFinalReport() : "No report available", question);
 
         try {
             return chatClient.prompt()
@@ -300,26 +327,82 @@ public class ResearchOrchestratorService {
             return "";
         }
 
-        // Try to find JSON inside ```json ... ``` or ``` ... ``` fences first
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("```\\w*\\s*(\\[{].+[}\\]]+)\\s*```", java.util.regex.Pattern.DOTALL).matcher(content);
+        Pattern pattern = Pattern.compile(
+                "```(?:\\w+)?\\s*(.*?)\\s*```",
+                Pattern.DOTALL);
+
+        Matcher matcher = pattern.matcher(content);
+
         if (matcher.find()) {
-            String json = matcher.group(1).trim();
-            // Validate it looks like JSON by checking first char is [ or {
-            if (!json.isEmpty() && (json.charAt(0) == '[' || json.charAt(0) == '{')) {
-                return json;
+            String candidate = matcher.group(1).trim();
+
+            if (!candidate.isEmpty() &&
+                    (candidate.startsWith("{") || candidate.startsWith("["))) {
+                return candidate;
             }
         }
 
-        // Fallback: strip fences from the raw content (original behavior for edge cases)
+        // Fallback
         String trimmed = content.trim();
-
-        // Remove opening fence: ``` or ```json or ```java etc.
-        trimmed = trimmed.replaceAll("^```\\w*\\s*\n?", "");
-
-        // Remove closing fence: ``` possibly preceded by whitespace/newline
-        trimmed = trimmed.replaceAll("\\n?```$", "");
+        trimmed = trimmed.replaceFirst("^```\\w*\\s*", "");
+        trimmed = trimmed.replaceFirst("\\s*```$", "");
 
         return trimmed.trim();
+    }
+
+    /**
+     * Delete a research session and its associated steps (cascade delete).
+     * Only works on non-running sessions (COMPLETED, FAILED, CANCELLED).
+     *
+     * @return the deleted session, or null if not found/not deletable
+     */
+    public ResearchSession deleteSession(UUID sessionId) {
+        ResearchSession session = getResearch(sessionId);
+        if (session == null) {
+            return null; // Will be handled by controller as 404
+        }
+        if ("PROCESSING".equals(session.getStatus().name())) {
+            throw new IllegalStateException("Cannot delete a processing research session. Use the cancel endpoint instead.");
+        }
+        sessionRepo.deleteById(sessionId);
+        log.info("Deleted research session: {}", sessionId);
+        return session;
+    }
+
+    /**
+     * Delete multiple research sessions in bulk. All-or-nothing rollback semantics — if any deletion fails, none are deleted.
+     * Only works on non-running sessions (COMPLETED, FAILED, CANCELLED).
+     *
+     * @return list of successfully deleted sessions (always the full list if this method succeeds)
+     */
+    @Transactional
+    public List<ResearchSession> deleteSessionsInBulk(List<UUID> sessionIds) {
+        // Validate all sessions first — if any fail validation, reject entire batch (rollback behavior)
+        for (UUID id : sessionIds) {
+            ResearchSession session = getResearch(id);
+            if (session == null || "PROCESSING".equals(session.getStatus().name())) {
+                throw new IllegalStateException("Cannot delete session: " + id + (session == null ? " (not found)" : " — is still processing"));
+            }
+        }
+
+        // All validations passed — proceed with batch deletion
+        List<ResearchSession> sessions = new java.util.ArrayList<>();
+        for (UUID id : sessionIds) {
+            ResearchSession session = getResearch(id);
+            if (session != null && !"PROCESSING".equals(session.getStatus().name())) {
+                sessions.add(session);
+            }
+        }
+
+        List<UUID> idsToDelete = sessions.stream().map(ResearchSession::getId).toList();
+        if (!idsToDelete.isEmpty()) {
+            for (UUID id : idsToDelete) {
+                sessionRepo.deleteById(id); // Individual delete within @Transactional — rollback on any failure
+            }
+            log.info("Deleted {} research sessions in bulk: {}", idsToDelete.size(), idsToDelete);
+        }
+
+        return sessions;
     }
 
     /**
@@ -330,7 +413,8 @@ public class ResearchOrchestratorService {
         private String title;
         private String description;
 
-        public SubTopic() {}
+        public SubTopic() {
+        }
 
         public SubTopic(int id, String title, String description) {
             this.id = id;
@@ -338,11 +422,28 @@ public class ResearchOrchestratorService {
             this.description = description;
         }
 
-        public int getId() { return id; }
-        public void setId(int id) { this.id = id; }
-        public String getTitle() { return title; }
-        public void setTitle(String title) { this.title = title; }
-        public String getDescription() { return description; }
-        public void setDescription(String description) { this.description = description; }
+        public int getId() {
+            return id;
+        }
+
+        public void setId(int id) {
+            this.id = id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
     }
 }

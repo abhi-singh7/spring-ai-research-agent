@@ -1,6 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { environment } from '../../../environments/environment';
+import { Observable } from 'rxjs';
 
 @Injectable({ providedIn: 'root' })
 export class ResearchHistoryService {
@@ -63,6 +64,22 @@ export class ResearchHistoryService {
         this.totalElements.set(0);
       }
     });
+  }
+
+  /**
+   * Delete a single research session from history.
+   */
+  deleteSession(sessionId: string): Observable<void> {
+    const url = `${environment.apiUrl}/api/research/history/${sessionId}`;
+    return this.http.delete<void>(url);
+  }
+
+  /**
+   * Bulk delete multiple research sessions from history.
+   */
+  bulkDeleteSessions(sessionIds: string[]): Observable<void> {
+    const url = `${environment.apiUrl}/api/research/history/bulk-delete`;
+    return this.http.post<void>(url, sessionIds);
   }
 
 }
