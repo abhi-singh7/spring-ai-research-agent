@@ -111,32 +111,33 @@ interface DeleteConfirmData {
           @for (item of sessions(); track item.id) {
             <div class="history-item-wrapper fade-in" [routerLink]="['/research/history', item.id]" style="cursor: pointer;">
               <!-- Clickable area (excludes delete button) -->
-              <mat-card class="item-card">
-                <mat-card-content>
-                  <!-- Topic + status row -->
-                  <div class="topic-row">
-                    <span class="topic">{{ item.topic }}</span>
-                    <span class="status-chip"
-                          [class.pending]="item.status === 'PENDING'"
-                          [class.processing]="item.status === 'PROCESSING'"
-                          [class.completed]="item.status === 'COMPLETED'"
-                          [class.failed]="item.status === 'FAILED'"
-                          [class.cancelled]="item.status === 'CANCELLED'">
-                      {{ getStatusLabel(item.status) }}
-                    </span>
-                  </div>
-                </mat-card-content>
+            <mat-card class="item-card">
+              <!-- Card body using flexbox: topic left, status chip + dates right -->
+              <mat-card-content class="card-body">
+                <span class="topic">{{ item.topic }}</span>
+                <div class="card-right-side">
+                  <span class="status-chip"
+                        [class.pending]="item.status === 'PENDING'"
+                        [class.processing]="item.status === 'PROCESSING'"
+                        [class.completed]="item.status === 'COMPLETED'"
+                        [class.failed]="item.status === 'FAILED'"
+                        [class.cancelled]="item.status === 'CANCELLED'">
+                    {{ getStatusLabel(item.status) }}
+                  </span>
 
-                <!-- Footer: date -->
-                <mat-card-actions class="history-item-actions" align="start">
-                  @if (item.createdAt) {
-                    <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                  @if (item.createdAt || item.completedAt) {
+                    <div class="card-date-row">
+                      @if (item.createdAt) {
+                        <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                      }
+                      @if (item.completedAt && item.status === 'COMPLETED') {
+                        <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                      }
+                    </div>
                   }
-                  @if (item.completedAt && item.status === 'COMPLETED') {
-                    <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-                  }
-                </mat-card-actions>
-              </mat-card>
+                </div>
+              </mat-card-content>
+            </mat-card>
 
               <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
               <button mat-icon-button color="warn" class="delete-btn-outside"
@@ -155,27 +156,33 @@ interface DeleteConfirmData {
           @for (item of sessions(); track item.id) {
             <div class="history-item-wrapper fade-in" [class.selected]="isSelected(item.id)">
 
-              <!-- Selection row: checkbox + topic + status -->
+              <!-- Selection row: checkbox + topic left-aligned -->
               <mat-checkbox class="session-checkbox"
                             (change)="toggleSelect($event, item)"
                             [checked]="isSelected(item.id)"></mat-checkbox>
               <span class="topic">{{ item.topic }}</span>
-              <span class="status-chip"
-                    [class.pending]="item.status === 'PENDING'"
-                    [class.processing]="item.status === 'PROCESSING'"
-                    [class.completed]="item.status === 'COMPLETED'"
-                    [class.failed]="item.status === 'FAILED'"
-                    [class.cancelled]="item.status === 'CANCELLED'">
-                {{ getStatusLabel(item.status) }}
-              </span>
 
-              <!-- Footer: date -->
-              @if (item.createdAt) {
-                <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
-              }
-              @if (item.completedAt && item.status === 'COMPLETED') {
-                <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-              }
+              <div class="selection-right-side">
+                <!-- Status chip + dates column -->
+                <span class="status-chip"
+                      [class.pending]="item.status === 'PENDING'"
+                      [class.processing]="item.status === 'PROCESSING'"
+                      [class.completed]="item.status === 'COMPLETED'"
+                      [class.failed]="item.status === 'FAILED'"
+                      [class.cancelled]="item.status === 'CANCELLED'">
+                  {{ getStatusLabel(item.status) }}
+                </span>
+
+                <!-- Footer: date -->
+                <div class="selection-date-row" [class.two-dates]="item.status === 'COMPLETED' && item.createdAt">
+                @if (item.createdAt) {
+                  <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                }
+                @if (item.completedAt && item.status === 'COMPLETED') {
+                  <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                }
+                </div>
+              </div>
 
               <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
               <button mat-icon-button color="warn" class="delete-btn-outside"
@@ -234,11 +241,15 @@ interface DeleteConfirmData {
 
     /* ---- History item wrapper (card + delete button in a row) ---- */
     .history-item-wrapper {
-      display: flex; align-items: center; gap: 12px; width: 100%;
+      display: flex; align-items: center; gap: 8px; width: 100%;
     }
     .history-item-wrapper mat-card {
       flex: 1 1 auto; min-width: 0;
     }
+    .item-card { border-radius: 12px !important; overflow: hidden; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); cursor: pointer; position: relative; }
+    .item-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12); }
+
+    /* ---- Selection view row layout (checkbox + topic left-aligned, status chip + dates right-aligned) ---- */
     .delete-btn-outside {
       flex-shrink: 0;
       display: inline-flex !important;
@@ -256,17 +267,22 @@ interface DeleteConfirmData {
 
     /* ---- Normal view card ---- */
     a.history-item { text-decoration: none; color: inherit; }
-    .item-card { border-radius: 12px !important; overflow: hidden; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); cursor: pointer; }
-    .item-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12); }
 
-    /* ---- Selected card styling ---- */
+    /* ---- Selected card styling (normal view) ---- */
     .item-card.selected { border-left: 3px solid #6750a0 !important; background-color: rgba(103, 80, 160, 0.05) !important; }
     @media (prefers-color-scheme: dark) { .item-card.selected { background-color: rgba(103, 80, 160, 0.1) !important; } }
 
-    /* ---- Topic row ---- */
-    .topic-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
-    .topic-info { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
-    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+    /* ---- Selected row styling (selection mode — no card involved) ---- */
+    .history-item-wrapper.selected { background-color: rgba(103, 80, 160, 0.05) !important; border-radius: 8px; }
+    @media (prefers-color-scheme: dark) { .history-item-wrapper.selected { background-color: rgba(103, 80, 160, 0.1) !important; } }
+
+    /* ---- Card body (topic left, status+dates right) ---- */
+    .card-body { display: flex !important; align-items: center; justify-content: space-between; gap: 16px; min-height: 0; padding-right: 4px; }
+    .card-right-side { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; max-width: 280px; }
+
+
+    /* ---- Topic text ---- */
+    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
     /* ---- Selection row (checkbox + topic) ---- */
     .selection-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px 0 14px; }
@@ -289,9 +305,26 @@ interface DeleteConfirmData {
       .cancelled { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
     }
 
-    /* ---- Card actions (footer) ---- */
-    .history-item-actions { padding-right: 16px !important; display: flex; align-items: center; gap: 12px; }
-    .date-info, .completed-info { font-size: 0.8rem; color: #1a1a2e !important; white-space: nowrap; }
+        /* ---- Card date row (inside card-right-side column, aligned with status chip) ---- */
+    .card-date-row {
+      display: grid !important; align-items: center; gap: 2px; text-align: right; padding-right: 0; max-width: 300px;
+    }
+
+    /* ---- Selection right-side column (status chip + dates stacked vertically) ---- */
+    .selection-right-side {
+      display: flex !important; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; max-width: 280px;
+    }
+
+    /* ---- Selection view date row (below status chip in selection mode) ---- */
+    .selection-date-row {
+      display: grid !important; align-items: center; gap: 2px; padding-right: 4px; max-width: 300px;
+    }
+
+    /* ---- Card date info text ---- */
+    .date-info, .completed-info { font-size: 0.8rem; color: #1a1a2e !important; white-space: nowrap; max-width: 300px; }
+    @media (prefers-color-scheme: dark) {
+      .date-info, .completed-info { color: #bdbdbd !important; }
+    }
 
     /* ---- Empty state ---- */
     .empty-state { text-align: center; padding: 48px 24px; color: #1a1a2e !important; }
