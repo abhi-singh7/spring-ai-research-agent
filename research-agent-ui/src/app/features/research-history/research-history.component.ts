@@ -103,22 +103,18 @@ interface DeleteConfirmData {
              </button>
            }
 
-          @if (inSelectionMode) {
-
-
-            @if (hasActualSelections()) {
-              <span class="selection-count">{{ selectionCount() }} selected</span>
-              <button mat-stroked-button color="primary" class="select-all-btn" (click)="toggleSelectAll()">
-                {{ isCurrentPageSelected() ? 'Deselect All' : 'Select All' }}
-              </button>
-              <button mat-stroked-button color="warn" [disabled]="!hasActualSelections()"
-                      class="delete-btn" (click)="onBulkDelete()">
-                Delete Selected
-              </button>
-            }
+          @if (inSelectionMode && hasActualSelections()) {
+            <span class="selection-count">{{ selectionCount() }} selected</span>
+            <button mat-stroked-button color="primary" class="select-all-btn" (click)="toggleSelectAll()">
+              {{ isCurrentPageSelected() ? 'Deselect All' : 'Select All' }}
+            </button>
+            <button mat-stroked-button color="warn" [disabled]="!hasActualSelections()"
+                    class="delete-btn" (click)="onBulkDelete()">
+              Delete Selected
+            </button>
           }
 
-          <!-- Exit selection mode button — always shown in selection mode -->
+          <!-- Exit selection mode — always shown when in selection mode so user can cancel -->
           @if (inSelectionMode) {
             <span style="flex-shrink: 0;">&nbsp;</span>
             <button mat-stroked-button color="primary" class="cancel-selection-btn" (click)="exitSelectionMode()">Cancel</button>
