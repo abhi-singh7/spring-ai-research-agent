@@ -94,97 +94,124 @@ interface DeleteConfirmData {
         <input matInput placeholder="Filter by topic..." (keyup)="onSearch($event)" />
       </mat-form-field>
 
-      <!-- Action toolbar — shown when items are selected -->
-      @if (hasSelection()) {
+      <!-- Action toolbar — always visible when there are sessions -->
+      @if (sessions().length > 0) {
         <div class="action-toolbar fade-in">
-          <span class="selection-count">{{ selectionCount() }} selected</span>
-          <button mat-stroked-button color="warn" class="delete-btn" [disabled]="!hasSelection()"
-                  (click)="onBulkDelete()">
-            Delete Selected
-          </button>
+          @if (!inSelectionMode && !hasActualSelections()) {
+            <button mat-stroked-button color="primary" (click)="enterSelectionMode()">Multi Select</button>
+          }
+
+          <!-- In selection mode — show toolbar only when something is selected -->
+          @if (inSelectionMode) {
+            @if (hasActualSelections()) {
+              <span class="selection-count">{{ selectionCount() }} selected</span>
+              <button mat-stroked-button color="primary" class="select-all-btn" (click)="toggleSelectAll()">
+                {{ isCurrentPageSelected() ? 'Deselect All' : 'Select All' }}
+              </button>
+              <button mat-stroked-button color="warn" [disabled]="!hasActualSelections()"
+                      class="delete-btn" (click)="onBulkDelete()">
+                Delete Selected
+              </button>
+            }
+          }
+
+          <!-- Exit selection mode button — always shown in selection mode -->
+          @if (inSelectionMode) {
+            <span style="flex-shrink: 0;">&nbsp;</span>
+            <button mat-stroked-button color="primary" class="cancel-selection-btn" (click)="exitSelectionMode()">Cancel</button>
+          }
         </div>
       }
 
-      <!-- ---- Normal view: single cards with delete button per item ---- -->
-      @if (!hasSelection() && sessions().length > 0) {
+      <!-- ---- Normal view: single cards with delete button per item (no selection mode, no selections yet) ---- -->
+      @if (!inSelectionMode && !hasActualSelections() && sessions().length > 0) {
         <div class="session-list">
           @for (item of sessions(); track item.id) {
-            <div class="history-item-wrapper fade-in" [routerLink]="['/research/history', item.id]" style="cursor: pointer;">
-              <!-- Clickable area (excludes delete button) -->
-            <mat-card class="item-card">
-              <!-- Card body using flexbox: topic left, status chip + dates right -->
-              <mat-card-content class="card-body">
-                <span class="topic">{{ item.topic }}</span>
-                <div class="card-right-side">
-                  <span class="status-chip"
-                        [class.pending]="item.status === 'PENDING'"
-                        [class.processing]="item.status === 'PROCESSING'"
-                        [class.completed]="item.status === 'COMPLETED'"
-                        [class.failed]="item.status === 'FAILED'"
-                        [class.cancelled]="item.status === 'CANCELLED'">
-                    {{ getStatusLabel(item.status) }}
-                  </span>
+            <!-- Wrapper: card fills space, delete button on right edge -->
+            <div class="history-item-wrapper fade-in" style="cursor: pointer;">
 
-                  @if (item.createdAt || item.completedAt) {
-                    <div class="card-date-row">
-                      @if (item.createdAt) {
-                        <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
-                      }
-                      @if (item.completedAt && item.status === 'COMPLETED') {
-                        <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-                      }
-                    </div>
-                  }
-                </div>
-              </mat-card-content>
-            </mat-card>
+              <mat-card class="item-card" [routerLink]="['/research/history', item.id]">
+                <mat-card-content class="card-body">
+                  <span class="topic">{{ item.topic }}</span>
+                  <div class="card-right-side">
+                    <span class="status-chip"
+                          [class.pending]="item.status === 'PENDING'"
+                          [class.processing]="item.status === 'PROCESSING'"
+                          [class.completed]="item.status === 'COMPLETED'"
+                          [class.failed]="item.status === 'FAILED'"
+                          [class.cancelled]="item.status === 'CANCELLED'">
+                      {{ getStatusLabel(item.status) }}
+                    </span>
 
-              <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
-              <button mat-icon-button color="warn" class="delete-btn-outside"
+                    @if (item.createdAt || item.completedAt) {
+                      <div class="card-date-row">
+                        @if (item.createdAt) {
+                          <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                        }
+                        @if (item.completedAt && item.status === 'COMPLETED') {
+                          <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                        }
+                      </div>
+                    }
+                  </div>
+                </mat-card-content>
+              </mat-card>
+
+              <!-- Delete button — outside the navigable card area so [routerLink] doesn't intercept its clicks -->
+              <button mat-icon-button color="warn" class="delete-btn-outside normal-view-delete"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
                 <mat-icon>delete_forever</mat-icon>
               </button>
+
             </div>
           }
         </div>
       }
 
-      <!-- ---- Selection view: checkboxes on each card with delete button per item ---- -->
-      @if (hasSelection()) {
+      <!-- ---- Selection mode view: individual checkboxes on each card with delete button per item ---- -->
+      @if ((inSelectionMode || hasActualSelections()) && sessions().length > 0) {
         <div class="session-list">
-          @for (item of sessions(); track item.id) {
-            <div class="history-item-wrapper fade-in" [class.selected]="isSelected(item.id)">
 
-              <!-- Selection row: checkbox + topic left-aligned -->
-              <mat-checkbox class="session-checkbox"
+          @for (item of sessions(); track item.id) {
+            <!-- Row: checkbox — card content — delete on right -->
+            <div class="history-item-wrapper selection-row fade-in"
+                 style="cursor: pointer;"
+                 [class.selected-item]="isSelected(item.id)">
+
+              <!-- Checkbox --><mat-checkbox class="selection-mode-checkbox"
                             (change)="toggleSelect($event, item)"
                             [checked]="isSelected(item.id)"></mat-checkbox>
-              <span class="topic">{{ item.topic }}</span>
 
-              <div class="selection-right-side">
-                <!-- Status chip + dates column -->
-                <span class="status-chip"
-                      [class.pending]="item.status === 'PENDING'"
-                      [class.processing]="item.status === 'PROCESSING'"
-                      [class.completed]="item.status === 'COMPLETED'"
-                      [class.failed]="item.status === 'FAILED'"
-                      [class.cancelled]="item.status === 'CANCELLED'">
-                  {{ getStatusLabel(item.status) }}
-                </span>
+            <div class="selection-card-delete-area">
+              <mat-card class="item-card">
+                <mat-card-content class="card-body">
+                  <span class="topic">{{ item.topic }}</span>
+                  <div class="card-right-side">
+                    <span class="status-chip"
+                          [class.pending]="item.status === 'PENDING'"
+                          [class.processing]="item.status === 'PROCESSING'"
+                          [class.completed]="item.status === 'COMPLETED'"
+                          [class.failed]="item.status === 'FAILED'"
+                          [class.cancelled]="item.status === 'CANCELLED'">
+                        {{ getStatusLabel(item.status) }}
+                      </span>
 
-                <!-- Footer: date -->
-                <div class="selection-date-row" [class.two-dates]="item.status === 'COMPLETED' && item.createdAt">
-                @if (item.createdAt) {
-                  <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
-                }
-                @if (item.completedAt && item.status === 'COMPLETED') {
-                  <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-                }
-                </div>
-              </div>
+                    @if (item.createdAt || item.completedAt) {
+                      <div class="card-date-row">
+                        @if (item.createdAt) {
+                          <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+                        }
+                        @if (item.completedAt && item.status === 'COMPLETED') {
+                          <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+                        }
+                      </div>
+                    }
+                  </div>
+                </mat-card-content>
+              </mat-card>
 
-              <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
+            <!-- Delete button on the right --></div>
               <button mat-icon-button color="warn" class="delete-btn-outside"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
@@ -231,10 +258,13 @@ interface DeleteConfirmData {
       display: flex; align-items: center; gap: 16px; padding: 12px 18px;
       background-color: #f5f5f5; border-radius: 8px; margin-bottom: 16px; min-height: 44px;
     }
-    @media (prefers-color-scheme: dark) { .action-toolbar { background-color: #333; } }
     .selection-count { font-size: 0.95rem; font-weight: 500; color: #1a1a2e !important; flex-shrink: 0; }
     @media (prefers-color-scheme: dark) { .selection-count { color: #eee; } }
     .delete-btn { padding: 0 24px; min-width: auto; font-weight: 500; letter-spacing: 0.3px; transition: all 0.2s ease; }
+    .cancel-selection-btn {
+      margin-left: 8px !important;
+      color: var(--md-sys-color-primary, #6750a0) !important;
+    }
 
     /* ---- Session list ---- */
     .session-list { display: flex; flex-direction: column; gap: 10px; }
@@ -353,6 +383,14 @@ interface DeleteConfirmData {
     .session-checkbox { margin-right: 8px !important; flex-shrink: 0; display: inline-flex !important; align-items: center !important; vertical-align: middle !important; }
     @media (prefers-color-scheme: dark) { .session-checkbox { color: #e0a5ff !important; } }
 
+    /* ---- Selection mode checkbox (outside history-item-wrapper — needs its own spacing) ---- */
+    .selection-mode-checkbox { margin-left: 24px !important; margin-right: 16px !important; flex-shrink: 0; display: inline-flex !important; align-items: center !important; }
+
+    /* ---- Card + delete row inside selection mode (horizontal layout) ---- */
+    .selection-card-delete-area {
+      display: flex !important; align-items: center; gap: 8px !important; width: 100%; flex: 1; min-width: 0;
+    }
+
     /* ---- Dark mode adjustments ---- */
     @media (prefers-color-scheme: dark) {
       .page-header h2 { color: #e0e0e0; }
@@ -374,13 +412,31 @@ export class ResearchHistoryComponent implements OnInit {
   /** Selection state — tracks selected session IDs */
   private selectionSet: Set<string> = new Set();
 
+  /** Whether the user has entered selection mode (checkboxes visible) even when nothing is selected yet */
+  inSelectionMode = false;
+
   /** Computed signal for selection count */
   selectionCount = () => this.selectionSet.size;
 
-  /** Computed signal to check if any items are selected */
-  hasSelection = () => this.selectionSet.size > 0;
+  /** Computed signal: true when selection mode is active OR any item is selected */
+  hasSelection = () => this.inSelectionMode || this.selectionSet.size > 0;
 
-  ngOnInit(): void {
+  /** True when actual selections exist (something is checked) — triggers delete button */
+  hasActualSelections = () => this.selectionSet.size > 0;
+
+   /** True when all items on the current page are selected — for toggle Select All / Deselect All label */
+   isCurrentPageSelected = (): boolean => {
+     const currentPageItems = this.sessions();
+     if (currentPageItems.length === 0) return false;
+     for (const item of currentPageItems) {
+       if (!this.selectionSet.has(item.id)) {
+         return false;
+       }
+     }
+     return true;
+   };
+
+   ngOnInit(): void {
     this.historyService.loadHistory();
   }
 
@@ -420,7 +476,31 @@ export class ResearchHistoryComponent implements OnInit {
     return this.selectionSet.has(sessionId);
   }
 
-  toggleSelect(event: any, item: any): void {
+   enterSelectionMode(): void {
+     this.inSelectionMode = true;
+   }
+
+   exitSelectionMode(): void {
+     // Clear any selections and return to normal view
+     this.selectionSet.clear();
+     this.inSelectionMode = false;
+   }
+
+   toggleSelectAll(): void {
+     if (this.isCurrentPageSelected()) {
+       const currentPageItems = this.sessions();
+       for (const item of currentPageItems) {
+         this.selectionSet.delete(item.id);
+       }
+     } else {
+       const currentPageItems = this.sessions();
+       for (const item of currentPageItems) {
+         this.selectionSet.add(item.id);
+       }
+     }
+   }
+
+   toggleSelect(event: any, item: any): void {
     if (event.checked) {
       this.selectionSet.add(item.id);
     } else {
