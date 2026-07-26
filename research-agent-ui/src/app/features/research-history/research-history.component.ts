@@ -3,6 +3,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { ResearchHistoryService } from '../../core/services/research-history.service';
 import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
@@ -16,7 +17,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
   selector: 'app-delete-confirmation',
   standalone: true,
   encapsulation: ViewEncapsulation.None,
-  imports: [MatDialogModule, MatButtonModule],
+  imports: [MatDialogModule, MatButtonModule, MatIconModule],
   template: `
     <h2 mat-dialog-title>Delete Confirmation</h2>
     <mat-dialog-content class="delete-confirm-content">
@@ -70,6 +71,7 @@ interface DeleteConfirmData {
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
+    MatIconModule,
     RouterLink,
     MatDialogModule,
     MatSnackBarModule,
@@ -140,7 +142,7 @@ interface DeleteConfirmData {
               <button mat-icon-button color="warn" class="delete-btn-outside"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
-                X
+                <mat-icon>delete_forever</mat-icon>
               </button>
             </div>
           }
@@ -179,7 +181,7 @@ interface DeleteConfirmData {
               <button mat-icon-button color="warn" class="delete-btn-outside"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
-                X
+                <mat-icon>delete_forever</mat-icon>
               </button>
 
             </div>
@@ -239,6 +241,17 @@ interface DeleteConfirmData {
     }
     .delete-btn-outside {
       flex-shrink: 0;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 48px !important;
+      height: 48px !important;
+      border-radius: 50% !important;
+      transition: all 0.2s ease !important;
+    }
+    .delete-btn-outside:hover {
+      background-color: rgba(239, 68, 68, 0.1) !important;
+      transform: scale(1.05) !important;
     }
 
     /* ---- Normal view card ---- */
