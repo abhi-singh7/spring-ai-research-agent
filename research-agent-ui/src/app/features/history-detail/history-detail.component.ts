@@ -70,9 +70,9 @@ import { trigger, transition, style, animate } from '@angular/animations';
   styles: [`
     .history-detail-container { padding: 24px; max-width: 1000px; margin: 0 auto; }
 
-    /* Back link */
-    .back-link { display: inline-flex; align-items: center; gap: 6px; color: #6366f1; text-decoration: none; font-weight: 500; padding: 8px 0; margin-bottom: 16px; transition: all 0.2s ease; }
-    .back-link:hover { opacity: 0.7; transform: translateX(-2px); }
+    /* Back link — styled as a Material action, not a hyperlink */
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: #1a1a2e; text-decoration: none; font-weight: 500; padding: 8px 14px; margin-bottom: 16px; transition: all 0.2s ease; border-left: 3px solid transparent; }
+    .back-link:hover { opacity: 0.75; transform: translateX(-4px); border-left-color: #6366f1; background-color: rgba(99, 102, 241, 0.08); padding-left: 12px; }
     .back-link mat-icon { font-size: 20px; width: 20px; height: 20px; line-height: 20px; }
 
     /* Session info card */
