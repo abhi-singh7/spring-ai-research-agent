@@ -76,9 +76,9 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .back-link mat-icon { font-size: 20px; width: 20px; height: 20px; line-height: 20px; }
 
     /* Session info card */
-    .session-info { margin-bottom: 24px; border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
+    .session-info { margin-bottom: 24px; border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); background-color: #ffffff; }
     .info-content { display: flex; align-items: center; gap: 16px; padding: 16px 20px; }
-    .info-content h2 { margin: 0; font-size: 1.35rem; font-weight: 600; color: #1a1a2e; flex: 1; }
+    .info-content h2 { margin: 0; font-size: 1.35rem; font-weight: 600; color: #0f0f23 !important; flex: 1; }
 
     /* Status chip */
     .status-chip { padding: 4px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; letter-spacing: 0.3px; transition: all 0.3s ease; }
@@ -88,9 +88,9 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .failed { background-color: #ffebee; color: #c62828; }
     .cancelled { background-color: #fafafa; color: #424242; border: 1px solid #bdbdbd; }
 
-    /* Dark mode status chip colors */
+    /* Dark mode heading */
     @media (prefers-color-scheme: dark) {
-      .info-content h2 { color: #e0e0e0; }
+      .info-content h2 { color: #f5f5f5; }
       .pending { background-color: rgba(255, 183, 77, 0.2); color: #ffb74d; box-shadow: 0 0 8px rgba(255, 183, 77, 0.1); }
       .processing { background-color: rgba(66, 165, 245, 0.2); color: #42a5f5; box-shadow: 0 0 8px rgba(66, 165, 245, 0.1); }
       .completed { background-color: rgba(102, 187, 106, 0.2); color: #66bb6a; box-shadow: 0 0 8px rgba(102, 187, 106, 0.1); }
