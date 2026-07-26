@@ -97,12 +97,15 @@ interface DeleteConfirmData {
       <!-- Action toolbar — always visible when there are sessions -->
       @if (sessions().length > 0) {
         <div class="action-toolbar fade-in">
-          @if (!inSelectionMode && !hasActualSelections()) {
-            <button mat-stroked-button color="primary" (click)="enterSelectionMode()">Multi Select</button>
-          }
+           @if (!inSelectionMode && !hasActualSelections()) {
+             <button mat-icon-button color="primary" (click)="enterSelectionMode()" [attr.aria-label]="'Delete multiple items'">
+               <mat-icon>delete_sweep</mat-icon>
+             </button>
+           }
 
-          <!-- In selection mode — show toolbar only when something is selected -->
           @if (inSelectionMode) {
+
+
             @if (hasActualSelections()) {
               <span class="selection-count">{{ selectionCount() }} selected</span>
               <button mat-stroked-button color="primary" class="select-all-btn" (click)="toggleSelectAll()">
