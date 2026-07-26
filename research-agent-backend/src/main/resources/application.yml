@@ -6,7 +6,7 @@ spring:
       base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
       chat:
         options:
-          model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
+          model: ${LLM_MODEL:gemma4:e2b-it-qat }
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
     mcp:
@@ -64,3 +64,9 @@ task:
 
 # SSE timeout (milliseconds) - 10 minutes default
 spring.ai.sse.timeout: 600000
+
+# Abandoned session cleanup scheduler
+app:
+  cleanup:
+    stale-after: PT1H   # PROCESSING sessions older than this are considered abandoned
+    interval: PT2M     # Scheduler runs every 30 minutes (fixed rate)

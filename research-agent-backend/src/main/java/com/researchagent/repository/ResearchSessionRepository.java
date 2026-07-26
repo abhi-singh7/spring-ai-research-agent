@@ -1,12 +1,15 @@
 package com.researchagent.repository;
 
 import com.researchagent.model.entity.ResearchSession;
+import com.researchagent.model.enums.ResearchStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -27,4 +30,9 @@ public interface ResearchSessionRepository extends JpaRepository<ResearchSession
      * Search sessions by topic (case-insensitive), paginated.
      */
     Page<ResearchSession> findByTopicContainingIgnoreCase(String query, Pageable pageable);
+
+    /**
+     * Find abandoned PROCESSING sessions older than the given cutoff timestamp.
+     */
+    List<ResearchSession> findAllByStatusAndCreatedAtBefore(ResearchStatus status, LocalDateTime cutoff);
 }

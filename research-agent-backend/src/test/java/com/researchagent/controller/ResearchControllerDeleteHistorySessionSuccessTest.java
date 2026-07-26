@@ -31,3 +31,5 @@ class ResearchControllerDeleteHistorySessionSuccessTest {
 
         mockMvc.perform(delete("/api/research/history/{sessionId}", completedId))
             .andExpect(status().isNoContent());
+    }
+}

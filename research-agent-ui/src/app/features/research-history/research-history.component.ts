@@ -5,7 +5,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { RouterLink } from '@angular/router';
 import { ResearchHistoryService } from '../../core/services/research-history.service';
-import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { MatSnackBarModule, MatSnackBar } from '@angular/material/snack-bar';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 
@@ -15,14 +15,14 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 @Component({
   selector: 'app-delete-confirmation',
   standalone: true,
-  imports: [MatDialogModule],
+  imports: [MatDialogModule, MatButtonModule],
   template: `
     <h2 mat-dialog-title>Delete Confirmation</h2>
     <mat-dialog-content class="delete-confirm-content">
       <p>{{ data.message }}</p>
-      @if (data.topics?.length > 0) {
+      @if (data && data.topics && data.topics.length > 0) {
         <div class="topic-list">
-          @for (topic of data.topics; track topic) {
+          @for (topic of data!.topics!; track topic) {
             <span class="topic-item">{{ topic }}</span>
           }
         </div>
@@ -37,13 +37,15 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
     .delete-confirm-content { min-width: 300px; max-width: 500px; }
     .topic-list { margin-top: 12px; padding-left: 8px; border-left: 2px solid #ccc; }
     @media (prefers-color-scheme: dark) { .topic-list { border-left-color: #555; } }
-    .topic-item { display: block; font-size: 0.85rem; color: #666; padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
-    @media (prefers-color-scheme: dark) { .topic-item { color: #aaa; } }
-    :host ::ng-deep .mat-dialog-container { border-radius: 12px !important; padding: 0 !important; overflow: hidden; }
+    :host { --topic-text: #616161; --topic-text-dark: rgba(255, 255, 255, 0.6); }
+    .topic-item { display: block; font-size: 0.85rem; color: var(--topic-text); padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
+    @media (prefers-color-scheme: dark) { .topic-item { color: var(--topic-text-dark); } }
+    :host ::ng-deep .mat-dialog-container { border-radius: 12px; }
   `]
 })
 class DeleteConfirmationDialogComponent {
-  
+  readonly data = inject<DeleteConfirmData>(MAT_DIALOG_DATA);
+  readonly dialogRef = inject(MatDialogRef<DeleteConfirmationDialogComponent>);
 }
 
 interface DeleteConfirmData {
@@ -72,7 +74,7 @@ interface DeleteConfirmData {
     <div class="research-history-container">
 
       <!-- Page header -->
-      <div class="page-header" [@fadeIn]>
+      <div class="page-header fade-in">
         <h2>Research History</h2>
         @if (!hasSelection()) {
           <span class="session-count">{{ totalElements() }} session{{ totalElements() === 1 ? '' : 's' }}</span>
@@ -80,14 +82,14 @@ interface DeleteConfirmData {
       </div>
 
       <!-- Search bar -->
-      <mat-form-field appearance="outline" class="full-width search-bar">
+      <mat-form-field appearance="outline" class="full-width search-bar fade-in">
         <mat-label>Search topics...</mat-label>
         <input matInput placeholder="Filter by topic..." (keyup)="onSearch($event)" />
       </mat-form-field>
 
       <!-- Action toolbar — shown when items are selected -->
       @if (hasSelection()) {
-        <div class="action-toolbar" [@fadeIn]>
+        <div class="action-toolbar fade-in">
           <span class="selection-count">{{ selectionCount() }} selected</span>
           <button mat-stroked-button color="warn" class="delete-btn" [disabled]="!hasSelection()"
                   (click)="onBulkDelete()">
@@ -100,7 +102,8 @@ interface DeleteConfirmData {
       @if (!hasSelection() && sessions().length > 0) {
         <div class="session-list">
           @for (item of sessions(); track item.id) {
-            <a [routerLink]="['/research/history', item.id]" class="history-item" [@fadeIn]>
+            <div class="history-item-wrapper fade-in" [routerLink]="['/research/history', item.id]" style="cursor: pointer;">
+              <!-- Clickable area (excludes delete button) -->
               <mat-card class="item-card">
                 <mat-card-content>
                   <!-- Topic + status row -->
@@ -117,23 +120,24 @@ interface DeleteConfirmData {
                   </div>
                 </mat-card-content>
 
-                <!-- Footer: date + delete button -->
-                <mat-card-actions class="history-item-actions" align="end">
+                <!-- Footer: date -->
+                <mat-card-actions class="history-item-actions" align="start">
                   @if (item.createdAt) {
                     <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
                   }
                   @if (item.completedAt && item.status === 'COMPLETED') {
                     <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
                   }
-                  <!-- Inline delete button — stops propagation so it doesn't navigate to detail view -->
-                  <button mat-icon-button color="warn"
-                          (click)="onDeleteSingle(item, $event)"
-                          [attr.aria-label]="'Delete research session: ' + item.topic">
-                    X
-                  </button>
                 </mat-card-actions>
               </mat-card>
-            </a>
+
+              <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
+              <button mat-icon-button color="warn" class="delete-btn-outside"
+                      (click)="onDeleteSingle(item, $event)"
+                      [attr.aria-label]="'Delete research session: ' + item.topic">
+                X
+              </button>
+            </div>
           }
         </div>
       }
@@ -142,50 +146,45 @@ interface DeleteConfirmData {
       @if (hasSelection()) {
         <div class="session-list">
           @for (item of sessions(); track item.id) {
-            <mat-card class="item-card" [@fadeIn] [class.selected]="isSelected(item.id)">
+            <div class="history-item-wrapper fade-in" [class.selected]="isSelected(item.id)">
 
               <!-- Selection row: checkbox + topic + status -->
-              <div class="selection-row">
-                <mat-checkbox class="session-checkbox"
-                              (change)="toggleSelect($event, item)"
-                              [checked]="isSelected(item.id)"></mat-checkbox>
-                <div class="topic-info">
-                  <span class="topic">{{ item.topic }}</span>
-                  <span class="status-chip"
-                        [class.pending]="item.status === 'PENDING'"
-                        [class.processing]="item.status === 'PROCESSING'"
-                        [class.completed]="item.status === 'COMPLETED'"
-                        [class.failed]="item.status === 'FAILED'"
-                        [class.cancelled]="item.status === 'CANCELLED'">
-                    {{ getStatusLabel(item.status) }}
-                  </span>
-                </div>
-              </div>
+              <mat-checkbox class="session-checkbox"
+                            (change)="toggleSelect($event, item)"
+                            [checked]="isSelected(item.id)"></mat-checkbox>
+              <span class="topic">{{ item.topic }}</span>
+              <span class="status-chip"
+                    [class.pending]="item.status === 'PENDING'"
+                    [class.processing]="item.status === 'PROCESSING'"
+                    [class.completed]="item.status === 'COMPLETED'"
+                    [class.failed]="item.status === 'FAILED'"
+                    [class.cancelled]="item.status === 'CANCELLED'">
+                {{ getStatusLabel(item.status) }}
+              </span>
 
-              <!-- Footer: date + delete button -->
-              <mat-card-actions class="history-item-actions" align="end">
-                @if (item.createdAt) {
-                  <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
-                }
-                @if (item.completedAt && item.status === 'COMPLETED') {
-                  <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
-                }
-                <!-- Inline delete button per item -->
-                <button mat-icon-button color="warn"
-                        (click)="onDeleteSingle(item, $event)"
-                        [attr.aria-label]="'Delete research session: ' + item.topic">
-                  X
-                </button>
-              </mat-card-actions>
+              <!-- Footer: date -->
+              @if (item.createdAt) {
+                <span class="date-info">{{ formatDateTime(item.createdAt) }}</span>
+              }
+              @if (item.completedAt && item.status === 'COMPLETED') {
+                <span class="completed-info">Completed: {{ formatDateTime(item.completedAt) }}</span>
+              }
 
-            </mat-card>
+              <!-- Delete button — outside the navigable area so [routerLink] doesn't intercept its clicks -->
+              <button mat-icon-button color="warn" class="delete-btn-outside"
+                      (click)="onDeleteSingle(item, $event)"
+                      [attr.aria-label]="'Delete research session: ' + item.topic">
+                X
+              </button>
+
+            </div>
           }
         </div>
       }
 
       <!-- Empty state -->
       @if (sessions().length === 0 && !hasSelection()) {
-        <div class="empty-state" [@fadeIn]>
+        <div class="empty-state fade-in">
           <p>No research history found.</p>
           <a routerLink="/" mat-raised-button color="primary">Start New Research</a>
         </div>
@@ -193,7 +192,7 @@ interface DeleteConfirmData {
 
       <!-- Pagination -->
       @if (!hasSelection() && totalPages() > 1) {
-        <div class="pagination" [@fadeIn]>
+        <div class="pagination fade-in">
           <button mat-stroked-button [disabled]="currentPage() <= 0" (click)="loadPage(currentPage() - 1)">Previous</button>
           <span class="page-info">Page {{ currentPage() + 1 }} of {{ totalPages() }}</span>
           <button mat-stroked-button [disabled]="currentPage() >= totalPages() - 1" (click)="loadPage(currentPage() + 1)">Next</button>
@@ -225,6 +224,17 @@ interface DeleteConfirmData {
 
     /* ---- Session list ---- */
     .session-list { display: flex; flex-direction: column; gap: 10px; }
+
+    /* ---- History item wrapper (card + delete button in a row) ---- */
+    .history-item-wrapper {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+    }
+    .history-item-wrapper mat-card {
+      flex: 1 1 auto; min-width: 0;
+    }
+    .delete-btn-outside {
+      flex-shrink: 0;
+    }
 
     /* ---- Normal view card ---- */
     a.history-item { text-decoration: none; color: inherit; }
@@ -278,8 +288,14 @@ interface DeleteConfirmData {
       .page-info { color: #bdbdbd; }
     }
 
-    /* ---- Fade in animation ---- */
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+    /* ---- Fade-in animation (CSS-only, no Angular animation module dependency) ---- */
+    .fade-in {
+      animation: fadeIn 0.25s ease-out both;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
     /* ---- Session checkbox (Material M3) ---- */
     .session-checkbox::ng-deep .mat-mdc-checkbox-mat-persistent { position: relative !important; }

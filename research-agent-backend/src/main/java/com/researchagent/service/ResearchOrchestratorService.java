@@ -261,7 +261,8 @@ public class ResearchOrchestratorService {
         // connections have autocommit disabled while LOBs are accessed. This helps avoid
         // "Large Objects may not be used in auto-commit mode" when a driver/DB returns
         // Clob instances that rely on the PostgreSQL Large Object API.
-        return sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
+        Page<ResearchSession> allByOrderByCreatedAtDesc = sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
+        return allByOrderByCreatedAtDesc;
     }
 
     /**
