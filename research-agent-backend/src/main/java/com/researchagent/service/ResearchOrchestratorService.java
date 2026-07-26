@@ -139,7 +139,7 @@ public class ResearchOrchestratorService {
             List<String> allFindings = new java.util.ArrayList<>();
             int maxIterations = request.getMaxIterations() != null ? request.getMaxIterations() : 10;
 
-            for (int i = 0; i < Math.min(subTopics.size(), maxIterations); i++) {
+            for (int i = 0; i < subTopics.size(); i++) {
                 SubTopic subTopic = subTopics.get(i);
 
                 String subPrompt = """
