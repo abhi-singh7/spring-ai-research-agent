@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, ViewEncapsulation, inject, OnInit } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -15,6 +15,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 @Component({
   selector: 'app-delete-confirmation',
   standalone: true,
+  encapsulation: ViewEncapsulation.None,
   imports: [MatDialogModule, MatButtonModule],
   template: `
     <h2 mat-dialog-title>Delete Confirmation</h2>
@@ -37,10 +38,14 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
     .delete-confirm-content { min-width: 300px; max-width: 500px; }
     .topic-list { margin-top: 12px; padding-left: 8px; border-left: 2px solid #ccc; }
     @media (prefers-color-scheme: dark) { .topic-list { border-left-color: #555; } }
-    :host { --topic-text: #616161; --topic-text-dark: rgba(255, 255, 255, 0.6); }
-    .topic-item { display: block; font-size: 0.85rem; color: var(--topic-text); padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
-    @media (prefers-color-scheme: dark) { .topic-item { color: var(--topic-text-dark); } }
-    :host ::ng-deep .mat-dialog-container { border-radius: 12px; }
+    .topic-item { display: block !important; font-size: 0.85rem !important; font-weight: 600 !important; padding: 2px 0 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 400px !important; }
+    /* Use Material M3's dialog supporting-text-color variable — adapts automatically to whichever theme the dialog is using (light or dark) */
+    .delete-confirm-content .topic-list .topic-item,
+    .mdc-dialog__content .delete-confirm-content .topic-item {
+      color: var(--mdc-dialog-supporting-text-color, #1a1a2e) !important;
+      padding-left: 6px !important;
+    }
+    .mat-dialog-container { border-radius: 12px !important; padding: 24px !important; overflow: visible !important; }
   `]
 })
 class DeleteConfirmationDialogComponent {
