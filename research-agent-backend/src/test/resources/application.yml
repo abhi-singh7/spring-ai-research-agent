@@ -1,0 +1,43 @@
+spring:
+  ai:
+    openai:
+      api-key: test-api-key
+      base-url: http://localhost:1234
+      chat:
+        options:
+          model: test-model
+          temperature: 0.7
+    mcp:
+      client:
+        type: SYNC
+        tool-name-prefix: "mcp-"
+        toolcallback:
+          enabled: false
+        stdio:
+          connections: {}
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate.dialect: org.hibernate.dialect.H2Dialect
+      hibernate.jdbc.lob.non_contextual_creation: true
+    show-sql: false
+  mvc:
+    throw-exception-if-no-handler-found: true
+
+# Disable scheduling for tests
+spring.devtools.livereload.enabled: false
+
+# SSE timeout (milliseconds) - shorter for tests
+spring.ai.sse.timeout: 30000
+
+# Abandoned session cleanup scheduler — run every 1 minute in tests
+app:
+  cleanup:
+    stale-after: PT1H
+    interval: PT1M

@@ -12,7 +12,7 @@ This document covers all configuration files and their purposes in the Spring Bo
 
 - Java 21 (OpenJDK recommended)
 - Maven 3.x+ for building
-- PostgreSQL database (for persistence)
+- PostgreSQL database (`research-agent` database must be created manually)
 - Ollama or compatible LLM endpoint (for AI functionality)
 
 ### Starting the Application
@@ -28,158 +28,152 @@ mvn spring-boot:run
 
 ## Configuration Files
 
-### application.yml — Spring Boot Configuration
+### `application.yml` — Spring Boot Configuration
 
 The primary configuration file for all backend settings. Located at `src/main/resources/application.yml`.
+
+#### LLM / Spring AI Configuration
+
+```yaml
+spring:
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-lm-i3QQE3mA:UBjIG0O2s6HZOLVFLxvI}
+      base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
+      chat:
+        options:
+          model: ${LLM_MODEL:gemma-4-26b-a4b-it-qat }
+          temperature: 0.7
+```
+
+- **api-key**: API key for the OpenAI-compatible LLM endpoint. For local Ollama, any string works since Ollama doesn't require authentication.
+- **base-url**: Base URL for the OpenAI-compatible REST API. Defaults to `http://localhost:1234` (Ollama's default). Change if running a different LLM backend. Note: no `/v1` suffix in the default — matches Ollama's actual endpoint structure.
+- **model**: The model name for all LLM calls. Default is `gemma-4-26b-a4b-it-qat`. Commented alternative: `qwopus3.6-35b-a3b-v1`. Should match the locally available Ollama model tag.
+- **temperature**: Controls randomness in text generation (0.7 = balanced creativity/determinism).
+
+#### MCP Server Configuration
+
+```yaml
+spring.ai.mcp.client.type: SYNC
+spring.ai.mcp.client.tool-name-prefix: "mcp-"
+spring.ai.mcp.client.toolcallback.enabled: true
+spring.ai.mcp.client.stdio.connections:
+  web_search:
+    command: uv
+    args: ["run", "/home/abhi/ollama_web_search.py"]
+    env: { OLLAMA_API_KEY: ${OLLAMA_API_KEY} }
+  searxng:
+    command: npx
+    args: ["-y", "mcp-searxng"]
+    env: { SEARXNG_URL: http://localhost:9090 }
+  excalidraw:
+    command: node
+    args: ["/home/abhi/excalidraw-mcp/dist/index.js", "--stdio"]
+  ddg_search:
+    command: uvx
+    args: ["duckduckgo-mcp-server"]
+```
+
+Four stdio-based MCP servers are auto-configured by Spring AI's `spring-ai-starter-mcp-client-webflux` dependency. Each server exposes tools (like `search`, `readUrl`) that the LLM can call during research. The tool-name prefix `mcp-` avoids naming conflicts with local Java tools (`WebSearchTool`, `UrlReaderTool`).
+
+| Server | Command | Purpose |
+|--------|---------|---------|
+| `web_search` | `uv run /home/abhi/ollama_web_search.py` | Web search via Ollama-powered search API (requires OLLAMA_API_KEY) |
+| `searxng` | `npx -y mcp-searxng` | SearXNG meta-search engine (requires SEARXNG_URL at localhost:9090) |
+| `excalidraw` | `node /home/abhi/excalidraw-mcp/dist/index.js --stdio` | Diagram generation via Excalidraw MCP |
+| `ddg_search` | `uvx duckduckgo-mcp-server` | DuckDuckGo fallback search |
+
+Local Java tools (`WebSearchTool`, `UrlReaderTool`) serve as fallback when MCP servers are unavailable. The `McpToolRouter` component determines task-type routing for MCP tools.
 
 #### Datasource Configuration
 
 ```yaml
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/research-agent
-    username: ${DB_USERNAME:postgres}        # Environment variable with default fallback to 'postgres'
-    password: ${DB_PASSWORD:postgres}         # Environment variable with default fallback to 'postgres'
+spring.datasource.url: jdbc:postgresql://localhost:5432/research-agent
+spring.datasource.username: ${DB_USERNAME:postgres}
+spring.datasource.password: ${DB_PASSWORD:postgres}
+spring.datasource.driver-class-name: org.postgresql.Driver
 ```
 
-- **url**: PostgreSQL JDBC connection string pointing to local database `research-agent` on port 5432
-- **username/password**: Read from environment variables `DB_USERNAME` and `DB_PASSWORD`. Default value is `postgres` if the env vars are not set.
+- **url**: PostgreSQL JDBC connection string pointing to local database `research-agent` on port 5432. The database must be created manually before first startup — Flyway does not create databases, only manages schema migrations within an existing database.
+- **username/password**: Read from environment variables with default fallback to `postgres`.
 
-**Note:** The database must be created manually before first startup — Flyway does not create databases, only manages schema migrations. Run: `createdb -U postgres research-agent`
+**Note:** Database creation command:
+```bash
+createdb -U postgres research-agent
+```
 
 #### JPA Configuration
 
 ```yaml
-  jpa:
-    hibernate:
-      ddl-auto: validate          # Schema validation only — no auto-creation or modification of tables
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect   # Hibernate dialect for PostgreSQL-specific features
+spring.jpa.hibernate.ddl-auto: validate          # Schema validation only — no auto-modification
+spring.jpa.properties.hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
+spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation: true  # Avoids PostgreSQL LOB error in auto-commit mode
 ```
 
 - **ddl-auto=validate**: Strictest mode — validates that the schema matches entity definitions on startup. Will fail to start if there are mismatches but will not modify the database in any way. Use `update` during development only.
-- **hibernate.dialect**: Specifies Hibernate's PostgreSQL dialect for type mapping and SQL generation
-
-#### OpenAI / Spring AI Configuration
-
-```yaml
-  ai:
-    openai:
-      api-key: ${OPENAI_API_KEY}              # LLM API key — required, read from environment variable
-      base-url: ${OLLAMA_BASE_URL:http://localhost:1234/v1}   # Base URL for OpenAI-compatible REST API (Ollama by default)
-      chat:
-        options:
-          model: ${LLM_MODEL:llama3.1}         # Model name — defaults to llama3.1 if env var not set
-          temperature: 0.7                     # Temperature for text generation (higher = more creative/random output)
-```
-
-- **api-key**: The API key for the OpenAI-compatible LLM endpoint. Required — no default value. For local Ollama instances, this can be any arbitrary string since Ollama doesn't require authentication.
-- **base-url**: Base URL for the OpenAI-compatible REST API. Defaults to `http://localhost:1234/v1` (Ollama's default endpoint). Change if running a different LLM backend.
-- **model**: The model name to use for all LLM calls. Defaults to `llama3.1`. For Ollama, this should match the locally available model tag.
-- **temperature**: Controls randomness in text generation. Higher values (0.7+) produce more creative/varied outputs; lower values (0.2-) produce more deterministic/focused outputs.
-
-#### Task Executor Configuration
-
-```yaml
-  task:
-    execution:
-      pool:
-        core-pool-size: 5         # Minimum number of threads in the pool
-        max-pool-size: 20         # Maximum number of threads allowed
-        queue-capacity: 100       # Max queued tasks before rejecting new ones
-```
-
-- **corePoolSize**: Minimum idle threads maintained even when inactive
-- **maxPoolSize**: Maximum threads created during peak load (up to 4x core size)
-- **queueCapacity**: Tasks beyond the pool's capacity are queued here; once queue is full, new tasks are rejected (throws `RejectedExecutionException`)
-
-**Note:** The async executor bean (`AsyncConfig.researchTaskExecutor()`) mirrors these same values — there is duplication. The application.yml configures Spring's default task executor while AsyncConfig creates a custom named executor for the research service specifically.
+- **hibernate.dialect**: Specifies Hibernate's PostgreSQL dialect for type mapping and SQL generation.
+- **hibernate.jdbc.lob.non_contextual_creation=true**: Critical setting — instructs Hibernate to stream LOB content instead of using PostgreSQL's OID-based Large Object API, preventing the "Large Objects may not be used in auto-commit mode" error with TEXT columns.
 
 #### SSE Timeout Configuration
 
 ```yaml
-  ai:
-    sse:
-      timeout: 600000             # SSE emitter timeout in milliseconds (10 minutes)
+spring.ai.sse.timeout: 600000             # SSE emitter timeout — 10 minutes of inactivity
 ```
 
-- When an SSE connection has no activity for this duration, it is automatically closed by Spring's `SseEmitter`
-- This prevents stale connections from accumulating and consuming resources
-- The actual streaming connections are established through `ResearchStreamingService.registerStream()`, which respects this timeout value via the application property injection
+When an SSE connection has no activity for this duration, it is automatically closed by Spring's `SseEmitter`. Prevents stale connections from accumulating. Actual streaming uses `ResearchStreamingService.registerStream()` which respects this value via property injection.
 
-### pom.xml — Maven Dependencies
+#### Async Task Executor Configuration
 
-```xml
-<properties>
-  <spring.ai.version>1.0.0</spring.ai.version>   <!-- Spring AI GA release — BOM-managed dependency versions -->
-</properties>
+```yaml
+task:
+  executor:
+    core-pool-size: 5
+    max-pool-size: 20
+    queue-capacity: 100
 ```
 
-**Critical version note:** The `spring-ai-bom` property (version 1.0.0) is used in the `<dependencyManagement>` section to manage all Spring AI dependency versions automatically. This means you do **not** specify a version for individual Spring AI artifacts — they inherit from the BOM.
+Configures Spring's default task executor pool sizes for async research processing. Note: `AsyncConfig.researchTaskExecutor()` creates a **custom named** bean with the same values — there is duplication between these two configurations. The custom bean (`@Bean("researchTaskExecutor")`) is injected directly into `ResearchOrchestratorService.processResearchAsync()`.
 
-#### Core Dependencies
+#### Abandoned Session Cleanup Scheduler
 
-| Dependency | Scope | Purpose |
-|-----------|-------|---------|
-| `spring-boot-starter-parent:3.2.5` | parent | Spring Boot project parent (dependency management, plugin conventions) |
-| `spring-ai-bom:1.0.0` | import, pom (BOM) | Spring AI dependency version management — all Spring AI artifacts use this BOM for consistent versions |
-| `spring-boot-starter-web` | compile | REST web server support (Tomcat embedded, Spring MVC) |
-| `spring-boot-starter-webflux` | compile | Reactive/WebFlux support required for SSE streaming endpoints |
-| `spring-boot-starter-data-jpa` | compile | JPA data access via Spring Data JPA |
-| `postgresql` | runtime | PostgreSQL JDBC driver (runtime dependency — not needed at compile time) |
-| `flyway-core` | compile | Database migration management tool |
-| `spring-ai-starter-model-openai` | compile | **Spring AI 1.0 GA** auto-configures OpenAI-compatible chat model client from application.yml properties. Replaces the old `spring-ai-openai-spring-boot-starter` artifact name (changed in Spring AI 1.0 GA). No manual bean definition needed — detects API key and base URL from configuration automatically. |
-| `spring-boot-starter-validation` | compile | Bean validation support for `@NotBlank`, `@Min`, etc. annotations |
+```yaml
+app:
+  cleanup:
+    stale-after: PT1H   # PROCESSING sessions older than this are considered abandoned
+    interval: PT2M      # Scheduler runs at this fixed rate (default documented as PT30M in code)
+```
+
+- **stale-after**: Duration after which a stuck PROCESSING session is marked CANCELLED by the cleanup scheduler. Default `PT1H` = 1 hour.
+- **interval**: Fixed-rate interval for the cleanup task. Default `PT2M` per YAML, but the code's fallback is `PT30M`. The actual runtime value depends on which takes precedence in Spring's property resolution.
+
+---
+
+### `pom.xml` — Maven Dependencies
+
+#### Core Dependencies (Spring Boot 3.5.4 + Spring AI 1.1.7)
+
+| Dependency | Purpose |
+|-----------|---------|
+| `spring-boot-starter-parent:3.5.4` | Spring Boot project parent (dependency management, plugin conventions) |
+| `spring-ai-bom:1.1.7` | Spring AI BOM — all Spring AI artifacts use this for consistent versions |
+| `spring-ai-starter-model-openai` | Auto-configures OpenAI-compatible chat model client from application.yml properties |
+| `spring-ai-starter-mcp-client-webflux` | MCP client with WebFlux-based transport (recommended for production streaming) |
+| `spring-boot-starter-webflux` | Reactive/WebFlux support required for SSE streaming endpoints |
+| `spring-boot-starter-web` | REST web server support (Tomcat embedded, Spring MVC) |
+| `spring-boot-starter-data-jpa` | JPA data access via Spring Data JPA |
+| `postgresql` | PostgreSQL JDBC driver (runtime scope) |
+| `spring-boot-starter-validation` | Bean validation (@NotBlank, @Min annotations) |
 
 #### Development Dependencies
 
 | Dependency | Scope | Purpose |
 |-----------|-------|---------|
-| `jsoup:1.17.2` | Compile | HTML content extraction/HTML parsing — **declared but not directly used in any scanned file**. May be intended for web scraping via the WebSearchTool's readUrl functionality, but no JSoup import is found in the codebase |
-| `lombok:optional` | Optional | Annotation processor for reducing boilerplate (@Data, @Slf4j). Must be installed as an IDE plugin (not a runtime dependency) to work properly. The `optional=true` means it won't be included in the final artifact's classpath during packaging — only used at compile time for generating getters/setters/equals/hashCode |
-| `spring-boot-starter-test` | test | Spring Boot testing support (JUnit 5, Mockito, Spring Test) |
+| `jsoup:1.20.1` | Compile | HTML content extraction for `UrlReaderTool` — used by MCP fallback tool |
+| `lombok` | Provided | Annotation processor for @Data, @SlfJ4 (compile-time only) |
+| `spring-boot-starter-test` | Test | JUnit 5, Mockito, Spring Test support |
+| `h2:2.4.240` | Test | In-memory database with PostgreSQL compatibility mode for tests |
 
----
-
-### database.yml — Database Migration Configuration
-
-Flyway configuration in application.yml:
-
-```yaml
-  flyway:
-    enabled: true         # Enable Flyway for automatic schema migrations on startup
-    locations: classpath:db/migration   # Look for migration files in src/main/resources/db/migration/
-```
-
-- **enabled=true**: Automatically runs pending migrations on application startup. Set to `false` during development if you need manual control over schema changes.
-- **locations**: Where Flyway looks for `.sql` migration files — in this case, the `src/main/resources/db/migration/` directory.
-
-#### Migration Files
-
-| File | Description |
-|------|-------------|
-| `V1__init_research_tables.sql` | Creates both `research_session` and `research_step` tables with all constraints, indexes, and foreign keys |
-
-**Naming convention:** `V{version}__description.sql` — Flyway version numbers are applied in order. Version 1 is the first migration; subsequent versions increment (V2, V3, etc.).
-
----
-
-## Database Schema Migration (Flyway)
-
-### First Run — Create Database Manually
-
-The database must be created **before** running the application for the first time. Flyway only manages schema changes within an existing database — it does not create databases:
-
-```bash
-createdb -U postgres research-agent
-# or with password prompt:
-PGPASSWORD=postgres psql -c "CREATE DATABASE research-agent;"
-```
-
-### Schema Version Tracking
-
-Flyway maintains a `flyway_schema_history` table in the target database that tracks which migrations have been applied. This ensures idempotent upgrades — if you run the application twice, Flyway won't re-apply V1 because it's already recorded as applied.
+**Note:** Flyway dependency is **commented out** in pom.xml (`<!-- <dependency> ... </dependency> -->`). Schema management relies on JPA entity validation only; the migration SQL file exists but is not actively used by a Flyway runner.
 
 ---
 
@@ -189,9 +183,10 @@ Flyway maintains a `flyway_schema_history` table in the target database that tra
 |----------|----------|---------|-------------|
 | `DB_USERNAME` | No | postgres | PostgreSQL username for database connection |
 | `DB_PASSWORD` | No | postgres | PostgreSQL password for database connection |
-| `OPENAI_API_KEY` | **Yes** | (none) | API key for the OpenAI-compatible LLM endpoint. Required — no default value. For local Ollama, can be any arbitrary string since Ollama doesn't require authentication. |
-| `OLLAMA_BASE_URL` | No | http://localhost:1234/v1 | Base URL for the OpenAI-compatible REST API (Ollama by default) |
-| `LLM_MODEL` | No | llama3.1 | Model name to use for LLM calls — should match the locally available model in Ollama |
+| `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local Ollama accepts any value. |
+| `OLLAMA_BASE_URL` | No | http://localhost:1234 | Base URL for OpenAI-compatible REST API (Ollama by default) |
+| `LLM_MODEL` | No | gemma-4-26b-a4b-it-qat | Model name — should match locally available Ollama model tag |
+| `OLLAMA_API_KEY` | Conditional | — | Required env var for the web_search MCP server (ollama_web_search.py) |
 
 ---
 
@@ -199,87 +194,22 @@ Flyway maintains a `flyway_schema_history` table in the target database that tra
 
 | File | Purpose | Category |
 |------|---------|----------|
-| `pom.xml` | Maven project configuration, dependencies, BOM management | Configuration |
-| `src/main/resources/application.yml` | Spring Boot config: datasource, JPA, AI/LLM, task executor, SSE timeout | Configuration |
-| `src/main/resources/db/migration/V1__init_research_tables.sql` | Database schema creation for research_session and research_step tables | Migration |
+| `pom.xml` | Maven project config, dependencies, BOM management | Configuration |
+| `src/main/resources/application.yml` | Spring Boot: datasource, JPA, AI/LLM, MCP servers, task executor, SSE timeout, cleanup scheduler | Configuration |
+| `src/main/java/com/researchagent/config/ChatClientConfig.java` | ChatClient bean (auto-configured by Spring AI from properties) | Config class |
+| `src/main/java/com/researchagent/config/AsyncConfig.java` | Named ThreadPoolTaskExecutor bean for research processing | Config class |
+| `src/main/java/com/researchagent/config/WebConfig.java` | CORS configuration for Angular dev server origins | Config class |
+| `src/main/resources/db/migration/V1__init_research_tables.sql` | Schema DDL for both tables (exists but Flyway runner is disabled) | Migration |
 
 ---
 
-## Async Execution Architecture
+## Spring AI 1.1.x Notes
 
-### ThreadPoolTaskExecutor Configuration (AsyncConfig)
+The application uses **Spring AI 1.1.7** — a stable release well past GA. Key configuration patterns:
 
-```java
-@Bean("researchTaskExecutor")
-public Executor researchTaskExecutor() {
-    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-    executor.setCorePoolSize(5);
-    executor.setMaxPoolSize(20);
-    executor.setQueueCapacity(100);
-    executor.setThreadNamePrefix("research-");
-    executor.initialize();
-    return executor;
-}
-```
+### Artifact Names
+- `spring-ai-starter-model-openai` — auto-configures OpenAI-compatible chat client from properties (no manual bean definitions needed)
+- `spring-ai-starter-mcp-client-webflux` — MCP client with reactive WebFlux transport for streaming support
 
-**Named bean**: The `@Bean("researchTaskExecutor")` annotation creates a named bean that can be injected via `@Qualifier("researchTaskExecutor")` to ensure the correct executor is used. This prevents accidentally injecting Spring's default async executor instead of this custom one.
-
-### Usage in ResearchOrchestratorService
-
-```java
-// In processResearchAsync(), the async method runs on the researchTaskExecutor:
-executor.execute(() -> {
-    // ... orchestration logic (Phase 1, Phase 2, Phase 3) ...
-});
-```
-
-**Note:** The `@EnableAsync` annotation is present in AsyncConfig but no `@Async` methods are actually implemented. The async execution is done manually via the injected executor bean rather than using Spring's declarative `@Async` mechanism. This approach gives more control over thread pool usage and error handling within each phase of orchestration.
-
----
-
-## CORS Configuration (WebConfig)
-
-```java
-@Configuration
-public class WebConfig implements WebMvcConfigurer {
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**")
-            .allowedOrigins("http://localhost:4200", "http://127.0.0.1:4200")
-            .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-            .allowCredentials(true)
-            .allowedHeaders("*");
-    }
-}
-```
-
-- **Patterns**: `/api/**` — applies to all API endpoints
-- **Origins**: Only the Angular dev server origins are allowed (localhost:4200 and 127.0.0.1:4200)
-- **Methods**: All standard HTTP methods including OPTIONS for preflight requests
-- **Credentials**: `true` — allows cookies, auth headers to be sent cross-origin
-
-**Note:** This is development-only CORS configuration. In production, the frontend and backend would likely share a domain (via reverse proxy), eliminating the need for CORS entirely.
-
----
-
-## Spring AI 1.0 GA Migration Notes
-
-The application uses **Spring AI 1.0.0 GA** — this is not a milestone version. Key changes from milestone versions:
-
-### Artifact Name Change
-- **Before (M3/M6)**: `spring-ai-openai-spring-boot-starter`
-- **After (GA)**: `spring-ai-starter-model-openai`
-
-The artifact naming convention changed in GA — the old naming is no longer available on Maven Central. The new name reflects that Spring AI now supports multiple model providers, not just OpenAI.
-
-### Artifact Location Change
-- **Before**: Available only in Spring Milestone Repository (spring-milestones)
-- **After**: Available on standard Maven Central (`https://repo.maven.apache.org/maven2/`) — no need for the spring-milestones repository declaration
-
-### Configuration Simplification
-- **Before**: Manual configuration of `OpenAiApiProperties` bean, explicit `ChatClient.Builder` setup with tool callbacks
-- **After**: Spring AI auto-configures everything from application.yml properties. The `ChatClientConfig` is minimal — just a basic `ChatClient` bean without manual tool registration or property setting.
-
-### Streaming API Change
-- **Before**: `.stream().map()` pattern required to extract content from response spec
-- **After**: `.stream().content()` returns `Flux<String>` directly — no mapping needed
+### Streaming API
+`.stream().content()` returns `Flux<String>` directly — no mapping needed. This is used in Phase 3 of the research pipeline to stream report chunks via SSE.

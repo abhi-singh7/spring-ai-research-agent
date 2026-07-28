@@ -104,6 +104,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- H2 in-memory database for testing with PostgreSQL compatibility mode -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.4.240</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!-- Lombok version managed by Spring Boot parent -->

@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-The Research Agent application is a full-stack system that takes a user's research topic, autonomously breaks it down into sub-topics, searches the web for each using an LLM with tool calling, reads content from multiple sources, synthesizes findings into a comprehensive report, and displays everything in real-time via SSE streaming.
+The Research Agent application is a full-stack system that takes a user's research topic, autonomously breaks it down into sub-topics, searches the web for each using an LLM with MCP tool calling, reads content from multiple sources, synthesizes findings into a comprehensive report, and displays everything in real-time via SSE streaming.
 
 **Tech Stack:**
-- Backend: Java 21 + Spring Boot 3.x + Spring AI 1.0 GA (OpenAI-compatible local LLM) — `research-agent-backend/`
+- Backend: Java 21 + Spring Boot 3.5.4 + Spring AI 1.1.7 (OpenAI-compatible local LLM) — `research-agent-backend/`
 - Frontend: Angular 18+ with Signals/RxJS + Angular Material M3 — `research-agent-ui/`
 - Database: PostgreSQL
 
@@ -40,10 +40,12 @@ The proxy config forwards `/api` requests to the Spring Boot backend.
 ## Key Backend Files
 
 - `src/main/java/com/researchagent/config/ChatClientConfig.java` — Configures OpenAI-compatible chat client via auto-configured beans (no manual bean definition needed)
+- `src/main/resources/application.yml` — MCP connections, LLM model, datasource, SSE timeout (600s), cleanup scheduler config
 - `src/main/java/com/researchagent/service/ResearchOrchestratorService.java` — Core orchestrator: breaks down topic into sub-topics, processes each with tool calling, generates final report. Uses `.stream().content()` returning `Flux<String>` for LLM streaming responses
 - `src/main/java/com/researchagent/service/ResearchStreamingService.java` — SSE connection management via `ConcurrentHashMap<UUID, SseEmitter>`, sends typed events: PROGRESS, CONTENT, REPORT_CHUNK, REPORT_DONE, STEP_COMPLETE, ERROR
-- `src/main/java/com/researchagent/controller/ResearchController.java` — REST endpoints for research lifecycle and history
-- `src/main/java/com/researchagent/controller/ResearchStreamController.java` — SSE endpoint at `/api/research/stream/{sessionId}`
+- `src/main/java/com/researchagent/controller/ResearchController.java` — REST endpoints for research lifecycle + history + bulk delete (single and multi-select)
+- `src/main/java/com/researchagent/tool/McpToolRouter.java` — Routes search tasks to MCP server chains with fallbacks
+- `src/main/java/com/researchagent/service/AbandonedSessionCleanupService.java` — Background scheduler marks stuck PROCESSING sessions as CANCELLED
 
 ## Key Frontend Files
 
@@ -78,8 +80,11 @@ The proxy config forwards `/api` requests to the Spring Boot backend.
 
 ## Important Implementation Details
 
-1. **Spring AI 1.0 GA** uses `spring-ai-starter-model-openai` artifact, not `spring-ai-openai-spring-boot-starter`. Manual config classes (OpenAiApiProperties, OpenAiChatModel) are auto-configured — no bean definitions needed.
-2. **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
-3. **tsConfig in angular.json**: Only add `tsConfig` to the `build` builder options, NOT the `serve` builder (schema validation error).
-4. **Angular Material M3 theming**: Use `mat.define-theme((color: ()))` for default theme. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — it cannot be called at root level.
-5. **SSE resilience**: Frontend detects EventSource.readyState === CLOSED and switches to polling mode on reconnect.
+1. **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact, not the old milestone name. Config classes are auto-configured — no bean definitions needed. See ChatClientConfig.java.
+2. **MCP tool routing**: Four stdio-based MCP servers (`web_search`, `searxng`, `excalidraw`, `ddg_search`) configured in application.yml. The `McpToolRouter` component routes search tasks to preferred server chains with fallbacks. Local Java tools (WebSearchTool, UrlReaderTool) serve as fallback when MCP servers are unavailable.
+3. **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
+4. **tsConfig in angular.json**: Only add `tsConfig` to the `build` builder options, NOT the `serve` builder (schema validation error).
+5. **Angular Material M3 theming**: Use `mat.define-theme((color: ()))` for default theme. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — it cannot be called at root level.
+6. **SSE resilience**: Frontend uses exponential backoff reconnection (max 3 attempts) before falling back to polling. A 90-second stall timer forces completion detection if no chunks arrive during report generation.
+7. **Abandoned session cleanup**: `AbandonedSessionCleanupService` marks PROCESSING sessions stuck >1 hour as CANCELLED every 30 minutes. Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
+8. **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Changes require manual migration or disabling validate mode in dev. `hibernate.jdbc.lob.non_contextual_creation=true` is required to avoid PostgreSQL LOB API errors.

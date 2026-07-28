@@ -10,8 +10,8 @@ This document covers all configuration files and their purposes in the Angular f
 
 ### Prerequisites
 
-- Node.js 18+ (for Angular 18)
-- npm or yarn package manager
+- Node.js 20+ (for Angular 18)
+- npm package manager
 
 ### Installation
 
@@ -34,7 +34,7 @@ This starts the Angular app at `http://localhost:4200/` and proxies `/api/*` req
 
 ## Configuration Files
 
-### proxy.conf.json — Dev Server Proxy
+### `proxy.conf.json` — Dev Server Proxy
 
 Maps `/api/*` requests from the frontend dev server to the Spring Boot backend. This is required because Angular's dev server runs on a different port than the backend, and CORS would block direct cross-origin requests.
 
@@ -60,7 +60,7 @@ Maps `/api/*` requests from the frontend dev server to the Spring Boot backend. 
 
 ---
 
-### environments/ — Environment-Specific Configuration
+### `environments/` — Environment-Specific Configuration
 
 Two environment files control runtime behavior based on the build target:
 
@@ -84,7 +84,7 @@ export const environment = {
 
 ---
 
-### angular.json — Project Build Configuration
+### `angular.json` — Project Build Configuration
 
 #### Application Settings
 - **Project name**: `research-agent-ui`
@@ -115,7 +115,7 @@ export const environment = {
 
 ---
 
-### tsconfig.json — TypeScript Configuration
+### `tsconfig.json` — TypeScript Configuration
 
 ```json
 {
@@ -145,14 +145,14 @@ export const environment = {
 }
 ```
 
-### tsconfig.app.json — App-Specific TypeScript Config
+### `tsconfig.app.json` — App-Specific TypeScript Config
 
 Extends base `tsconfig.json` with app-specific options:
 - **Extends**: `"./tsconfig.json"` (inherits all strict mode settings)
 - **outDir**: `"./dist/out-tsc/app"` — compiled output for the app
 - **Files**: Only `src/main.ts` is included as an entry point (Angular handles other file compilation separately via its build system, not through tsconfig)
 
-### tsconfig.spec.json — Test-Specific TypeScript Config
+### `tsconfig.spec.json` — Test-Specific TypeScript Config
 
 Extends base `tsconfig.json` with test-specific options:
 - **Extends**: `"./tsconfig.json"` (inherits all strict mode settings)
@@ -175,9 +175,10 @@ npx ng build --configuration=production
 # → dist/research-agent-ui/ directory with optimized production files
 ```
 
-### Production Build (with custom output path)
+### Watch Mode (development rebuild)
 ```bash
-npx ng build --configuration=production --output-path=/path/to/output/dir
+npm run watch
+# → Watches for changes and rebuilds in development mode
 ```
 
 ---
@@ -187,13 +188,12 @@ npx ng build --configuration=production --output-path=/path/to/output/dir
 | File | Purpose | Category |
 |------|---------|----------|
 | `angular.json` | Project structure, build targets, proxy reference | Configuration |
-| `package.json` | Dependencies and npm scripts | Configuration |
+| `package.json` | Dependencies and npm scripts (start, build, watch) | Configuration |
 | `proxy.conf.json` | Dev server API proxy (`/api` → backend) | Development |
 | `tsconfig.json` | Base TypeScript config (strict mode, module resolution) | Configuration |
 | `tsconfig.app.json` | App-specific TS config for build | Configuration |
 | `tsconfig.spec.json` | Test-specific TS config for Jasmine testing | Configuration |
 | `src/main.ts` | Application bootstrap entry point | Source |
-| `src/polyfills.ts` | Zone.js polyfill import | Polyfill |
 | `src/styles.scss` | Global SCSS: Material M3 theme, font setup, component styles | Styling |
 | `src/app/app.routes.ts` | Route definitions (lazy-loaded standalone components) | Routing |
 | `src/app/app.config.ts` | Application providers: Router, HttpClient, Animations, Markdown | Configuration |
@@ -221,3 +221,15 @@ The project uses inline styles rather than separate `.scss` files. This keeps co
 - Makes each component self-contained and portable
 
 **Trade-off**: For very large components with extensive styling, separate `.scss` files would be more maintainable. The current approach works well for the small-to-medium component sizes in this project.
+
+---
+
+## npm Scripts (`package.json`)
+
+| Script | Command | Description |
+|--------|---------|-------------|
+| `npm start` | `ng serve --proxy-config proxy.conf.json` | Start dev server with API proxy |
+| `npm run build` | `ng build` | Production build to `dist/research-agent-ui/` |
+| `npm run watch` | `ng build --watch --configuration development` | Watch mode for development |
+
+**Note:** No lint, test, or typecheck scripts are defined in the current package.json. Angular karma tests are configured but no npm script invokes them either.

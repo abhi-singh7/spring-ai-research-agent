@@ -34,6 +34,7 @@ export interface ResearchSession {
   completedAt?: string;    // ISO timestamp — only set when COMPLETED or FAILED
   finalReport?: string;    // Synthesized report content — only present for COMPLETED sessions
   streamUrl?: string;      // Optional custom SSE URL — not used in current implementation
+  steps?: HistoryDetailStep[];  // Steps from history detail endpoint (not always present)
 }
 ```
 
@@ -66,24 +67,56 @@ export interface ResearchHistoryItem {
 
 ---
 
-## Step Model (From Polling/History)
+## Step Models
 
-### ResearchStep
+### HistoryDetailStep — From Backend Detail Endpoint
 
-Represents a single step in the research pipeline. This model is **not** directly returned by any REST endpoint — it is derived from SSE events and used internally by components. The `steps` list in `ResearchSession` returns `StepDTO` objects from the backend, but the frontend uses this interface for its own step representation (e.g., from polling responses).
+Returned from `GET /api/research/history/{sessionId}`. Includes the step content (finding text).
+
+```typescript
+export interface HistoryDetailStep {
+  orderIndex: number;
+  type: StepType;                       // BREAKDOWN | SEARCH | READ | SYNTHESIS | SUBTOPIC | FINAL_REPORT
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  content?: string;                     // Finding text or parsed JSON (BREAKDOWN steps)
+}
+```
+
+### ResearchStep — Frontend Internal Step Representation
+
+Represents a single step in the research pipeline. Used internally by components and signals — not directly returned by any REST endpoint. The `steps` list from the backend uses `HistoryDetailStep`, but the frontend transforms these into `ResearchStep[]` format via `getStepName()`.
 
 ```typescript
 export interface ResearchStep {
   stepNumber: number;           // Step ordinal — 1-based index within session
-  name: string;                 // Human-readable step name (e.g., "Topic Breakdown", "Sub-topic A")
+  name: string;                 // Human-readable step name (e.g., "Breakdown", "Sub-topic 2")
   status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
-                                  // Note: uses 'IN_PROGRESS' not the backend's 'RUNNING'
+                                // Note: frontend uses 'IN_PROGRESS' not the backend's 'RUNNING'
   description?: string;         // Optional — step detail text from SSE PROGRESS events
   duration?: number;            // Optional — step execution time in milliseconds
 }
 ```
 
-**Note:** The frontend uses `IN_PROGRESS` while the backend uses `RUNNING` for the same concept. Components map between these values when rendering status chips.
+### StepType (Frontend Enum)
+
+```typescript
+export type StepType = 'BREAKDOWN' | 'SEARCH' | 'READ' | 'SYNTHESIS' | 'SUBTOPIC' | 'FINAL_REPORT';
+```
+
+Matches the backend `StepType` entity enum values. Used for step categorization and rendering in the step-list component.
+
+### Backend → Frontend Step Name Mapping
+
+The frontend's `ResearchService.getStepName()` converts backend types to display names:
+
+| Backend Type | Display Name | Notes |
+|-------------|-------------|-------|
+| BREAKDOWN | Breakdown | Phase 1 topic breakdown |
+| SUBTOPIC | Sub-topic {n} | Numbered dynamically per session |
+| SEARCH | Search | Web search via MCP/local tools |
+| READ | Read URL | Content extraction from specific URLs |
+| SYNTHESIS | Synthesis | Finding synthesis step |
+| FINAL_REPORT | Generating Report | Phase 3 report generation |
 
 ---
 
@@ -98,7 +131,7 @@ export interface PaginatedResult<T> {
   content: T[];            // Items on this page (array of items)
   totalElements: number;   // Total items across all pages
   totalPages: number;      // Total number of pages available
-  currentPage: number;     // Current page index (1-based in frontend, though backend uses 0-based)
+  currentPage: number;     // Current page index (0-based from backend)
   size: number;            // Items per page (page size)
 }
 ```
@@ -117,7 +150,7 @@ export interface FollowUpRequest {
 
 ### FollowUpResponse — Response from Follow-up Endpoint
 
-Returned from `POST /api/research/{sessionId}/followup`. Contains the LLM-generated answer.
+Returned from `POST /api/research/{sessionId}/followup`. Contains the LLM-generated answer. Note: the backend returns raw text (string), not an object with sessionId/answer/timestamp fields — the frontend interface includes these for completeness but the actual response is a plain string.
 
 ```typescript
 export interface FollowUpResponse {
@@ -136,8 +169,8 @@ export interface FollowUpResponse {
 Discriminated union type used to narrow event types in switch statements.
 
 ```typescript
-type SseEventType = 'PROGRESS' | 'CONTENT' | 'REPORT_CHUNK' | 
-                    'REPORT_DONE' | 'STEP_COMPLETE' | 'ERROR' | 'REPORT_START';
+export type SseEventType = 'PROGRESS' | 'CONTENT' | 'REPORT_CHUNK' | 
+                           'REPORT_DONE' | 'STEP_COMPLETE' | 'ERROR' | 'REPORT_START';
 ```
 
 ### Base Interface — SseEvent
@@ -156,10 +189,10 @@ export interface SseEvent {
 Each extends `SseEvent` with a literal `type` value and event-specific payload. The discriminated union pattern allows TypeScript to narrow the type within switch statements:
 
 ```typescript
-// Progress update during research
+// Progress update during research (start/transition of sub-topic)
 export interface ProgressSseEvent extends SseEvent {
   type: 'PROGRESS';
-  payload: string;         // Step description text (e.g., "Researching: Sub-topic A")
+  payload: string;         // Step description text (e.g., "Researching: Sub-topic A" or "Completed research on: X")
 }
 
 // Streaming content from sub-topic research phase
@@ -177,7 +210,7 @@ export interface ReportStartSseEvent extends SseEvent {
 // Individual chunk of final report during streaming
 export interface ReportChunkSseEvent extends SseEvent {
   type: 'REPORT_CHUNK';
-  payload: string;         // Report content chunk to accumulate
+  payload: string;         // Report content chunk to accumulate into _reportContentSignal
 }
 
 // Final report generation complete — full text provided as payload
@@ -186,10 +219,10 @@ export interface ReportDoneSseEvent extends SseEvent {
   payload: string;         // Complete final report text (markdown)
 }
 
-// Step completion metadata
+// Step completion metadata — flexible matching in handleStepComplete()
 export interface StepCompleteSseEvent extends SseEvent {
   type: 'STEP_COMPLETE';
-  payload: Record<string, unknown>;  // Step completion details — fragile matching via JSON.stringify+lowercase comparison in component
+  payload: Record<string, unknown>;  // May be string (step name), number (index/stepNumber), or object with stepName/name/index/stepNumber keys
 }
 
 // Error notification during processing
