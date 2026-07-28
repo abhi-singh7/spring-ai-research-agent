@@ -44,8 +44,11 @@ public class AbandonedSessionCleanupService {
         log.info("AbandonedSessionCleanupService initialized — stale-after={}, interval={}", staleAfter, appCleanupInterval());
     }
 
+    @Value("${app.cleanup.interval:PT30M}")
+    private Duration interval;
+
     private String appCleanupInterval() {
-        return "${app.cleanup.interval:PT30M}";
+        return String.valueOf(interval);
     }
 
     /**

@@ -252,6 +252,61 @@ class ResearchOrchestratorServiceTest {
         }
     }
 
+    // ---------- deleteSessionsInBulk ----------
+
+    @Test
+    void deleteSessionsInBulk_shouldDeleteAllValidSessions() {
+        UUID id1 = UUID.randomUUID();
+        UUID id2 = UUID.randomUUID();
+        ResearchSession s1 = createMockSession(id1, "Topic A");
+        ResearchSession s2 = createMockSession(id2, "Topic B");
+
+        when(sessionRepo.findByIdWithSteps(id1)).thenReturn(s1);
+        when(sessionRepo.findByIdWithSteps(id2)).thenReturn(s2);
+
+        List<ResearchSession> result = service.deleteSessionsInBulk(List.of(id1, id2));
+
+        assertThat(result).hasSize(2);
+        verify(sessionRepo).deleteById(id1);
+        verify(sessionRepo).deleteById(id2);
+    }
+
+    @Test
+    void deleteSessionsInBulk_shouldThrowWhenAnySessionIsProcessing() {
+        UUID validId = UUID.randomUUID();
+        UUID processingId = UUID.randomUUID();
+        ResearchSession validSession = createMockSession(validId, "Topic A");
+        validSession.setStatus(ResearchStatus.COMPLETED);
+        ResearchSession processingSession = new ResearchSession();
+        processingSession.setId(processingId);
+        processingSession.setStatus(ResearchStatus.PROCESSING);
+
+        when(sessionRepo.findByIdWithSteps(validId)).thenReturn(validSession);
+        when(sessionRepo.findByIdWithSteps(processingId)).thenReturn(processingSession);
+
+        assertThatThrownBy(() -> service.deleteSessionsInBulk(List.of(validId, processingId)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Cannot delete session");
+
+        verify(sessionRepo, never()).deleteById(any());
+    }
+
+    @Test
+    void deleteSessionsInBulk_shouldThrowWhenAnySessionNotFound() {
+        UUID validId = UUID.randomUUID();
+        UUID notFoundId = UUID.randomUUID();
+        ResearchSession validSession = createMockSession(validId, "Topic A");
+
+        when(sessionRepo.findByIdWithSteps(validId)).thenReturn(validSession);
+        when(sessionRepo.findByIdWithSteps(notFoundId)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.deleteSessionsInBulk(List.of(validId, notFoundId)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Cannot delete session");
+
+        verify(sessionRepo, never()).deleteById(any());
+    }
+
     // ---------- helpers ----------
 
     private ResearchSession createMockSession(UUID id, String topic) {
