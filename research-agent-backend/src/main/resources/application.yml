@@ -67,6 +67,8 @@ spring.ai.sse.timeout: 600000
 
 # Abandoned session cleanup scheduler
 app:
+  research:
+    default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
   cleanup:
     stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
     interval: PT2M     # Scheduler runs every 30 minutes (fixed rate)
