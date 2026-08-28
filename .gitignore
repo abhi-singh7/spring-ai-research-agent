@@ -1,0 +1,61 @@
+# === Build Output (Maven) ===
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# === IDE (IntelliJ IDEA) ===
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# === IDE (Eclipse) ===
+.settings/
+.classpath
+.factorypath
+.project
+bin/
+
+# === IDE (VS Code) - keep if shared, remove if not ===
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# === OS Files ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Logs ===
+*.log
+logs/
+*.pid
+
+# === Environment / Secrets ===
+.env
+.env.*
+!env.example
+
+# === Spring Boot Actuator ===
+actuator-endpoints/
+
+# === Generated Sources ===
+generated-sources/
+generated-resources/
+
+# === Angular Frontend ===
+dist/
+.angular/
+node_modules/
+
+# === MCP Tool Servers and Local Dev Tools ===
+.opencode/
+**/mcp*/node_modules/
+.claude/
+
+# === Ollama (if used locally) ===
+ollama_models/

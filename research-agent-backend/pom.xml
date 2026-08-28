@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.5</version>
+        <version>3.5.4</version>
         <relativePath/>
     </parent>
 
@@ -15,11 +15,11 @@
     <artifactId>research-agent</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>Research Agent</name>
-    <description>AI-powered Research Agent with Spring AI</description>
+    <description>AI-powered Research Agent with Spring AI and MCP support</description>
 
     <properties>
         <java.version>21</java.version>
-        <spring-ai.version>1.0.0</spring-ai.version>
+        <spring-ai.version>1.1.7</spring-ai.version>
     </properties>
 
     <dependencyManagement>
@@ -62,15 +62,21 @@
         </dependency>
 
         <!-- Flyway -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>org.flywaydb</groupId>-->
+<!--            <artifactId>flyway-core</artifactId>-->
+<!--        </dependency>-->
 
-        <!-- Spring AI OpenAI -->
+        <!-- Spring AI OpenAI (for local LLM via Ollama/OpenAI-compatible API) -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
+        <!-- Spring AI MCP Client (WebFlux-based transport, recommended for production with streaming) -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
         </dependency>
 
         <dependency>
@@ -79,15 +85,54 @@
         </dependency>
 
         <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.20.1</version>
+        </dependency>
+
+        <!-- Lombok for generating getters/setters/equals/hashCode at compile time -->
+        <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <optional>true</optional>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Spring Boot Test (for unit tests) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- H2 in-memory database for testing with PostgreSQL compatibility mode -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.4.240</version>
+            <scope>test</scope>
         </dependency>
 
     </dependencies>
 
+    <!-- Lombok version managed by Spring Boot parent -->
+
     <build>
         <plugins>
+            <!-- Enable Lombok annotation processing via maven-compiler-plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- Exclude Lombok from the final jar (it's only needed at compile time) -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

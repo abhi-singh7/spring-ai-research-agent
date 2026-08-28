@@ -6,11 +6,13 @@ The Angular frontend communicates with the backend via REST and SSE. All request
 
 ---
 
-## API Client — ResearchService
+## API Client — ResearchService & ResearchHistoryService
 
-The `ResearchService` (singleton, provided-in-root) is the primary interface between Angular components and the backend. It encapsulates three communication patterns:
+The primary interfaces between Angular components and the backend are two services:
 
-### 1. REST API Calls (HttpClient Observable<T>)
+### `ResearchService` (singleton, providedIn: root) — Primary Communication Layer
+
+#### REST API Calls (HttpClient Observable<T>)
 
 ```typescript
 // All methods return Observable<T> for async handling via .subscribe() or RxJS operators
@@ -19,49 +21,67 @@ startResearch(request: ResearchStartRequest): Observable<ResearchSession>
 getStatus(sessionId: string): Observable<ResearchSession>
 cancelResearch(sessionId: string): Observable<void>
 getHistoricalSession(sessionId: string): Observable<ResearchSession>
-submitFollowUp(sessionId: string, question: string): Observable<FollowUpResponse>
+submitFollowUp(sessionId: string, question: string): Observable<string>
 ```
 
-### 2. SSE Connection (EventSource)
+#### SSE Connection (EventSource)
 
 ```typescript
 // Establishes a native EventSource connection for real-time progress events
 connectSse(sessionId: string, streamUrl?: string): void
 
-// Closes the active SSE connection
+// Closes the active SSE connection and clears stall timer
 disconnectSse(): void
 ```
 
-The service listens for typed SSE events and updates reactive signals accordingly. See [state-management.md](./STATE-MANAGEMENT.md) for details on how SSE events map to signal state.
+The service listens for typed SSE events and updates reactive signals accordingly. Includes exponential backoff reconnection (3 attempts) before falling back to polling.
 
-### 3. Polling Fallback (setInterval + HttpClient)
+#### Polling Fallback (setInterval + HttpClient)
 
-When the SSE connection fails (EventSource.readyState === CLOSED) and the session is not in a terminal state, automatic fallback to polling:
+When the SSE connection fails or stalls, automatic fallback to polling:
 
 ```typescript
 // Starts 5-second interval polling of /api/research/{sessionId}
 startPolling(sessionId: string): void
 
-// Clears the polling interval
+// Clears the polling interval and stall timer
 stopPolling(): void
+```
+
+On terminal state detection (COMPLETED/FAILED/CANCELLED), steps from backend response are synced into frontend signal list.
+
+### `ResearchHistoryService` — History List & Deletion Operations
+
+```typescript
+// Paginated history loading with optional search term
+loadHistory(page: number, searchTerm?: string): void
+
+// Single session delete with 409 Conflict handling
+deleteSession(sessionId: string): Observable<void>
+
+// Bulk multi-select delete (all-or-nothing rollback)
+bulkDeleteSessions(ids: string[]): Observable<void>
 ```
 
 ---
 
 ## Backend API Endpoints (Consumed by Frontend)
 
-See [backend docs/API.md](../research-agent-backend/docs/API.md) for complete backend API reference. The frontend consumes the following endpoints:
+See [backend docs/API.md](../../research-agent-backend/docs/API.md) for complete backend API reference. The frontend consumes the following endpoints:
 
 | Endpoint | Method | Purpose | SSE/Fallback |
 |----------|--------|---------|--------------|
-| `/api/research` | POST | Start new session | SSE (primary), polling (fallback) |
+| `/api/research` | POST | Start new session | SSE (primary), polling (fallback on disconnect/stall) |
 | `/api/research/{sessionId}` | GET | Get session status | Polling only |
 | `/api/research/{sessionId}` | DELETE | Cancel session | None |
-| `/api/research/history` | GET | Paginated history list | None |
-| `/api/research/history/search` | GET | Search by topic name | None |
-| `/api/research/{sessionId}/report` | GET | Get final report text | None |
-| `/api/research/{sessionId}/followup` | POST | Submit follow-up question | None |
-| `/api/research/stream/{sessionId}` | GET | Subscribe to SSE events | Primary streaming method |
+| `/api/research/history` | GET | Paginated history list | ResearchHistoryService |
+| `/api/research/history/search?query=` | GET | Search by topic name | ResearchHistoryService (debounced) |
+| `/api/research/history/{sessionId}` | GET | Get historical session detail with steps | HistoryDetailComponent |
+| `/api/research/history/{sessionId}` | DELETE | Delete single historical session | Single delete (MatDialog confirm) |
+| `/api/research/history/bulk-delete` | POST | Bulk delete selected sessions | Multi-select delete toolbar |
+| `/api/research/stream/{sessionId}` | GET | Subscribe to SSE events | Primary streaming method with reconnection |
+| `/api/research/{sessionId}/report` | GET | Get final report text | Fallback if REPORT_DONE not received |
+| `/api/research/{sessionId}/followup` | POST | Submit follow-up question | FollowUpFormComponent |
 
 ---
 
@@ -71,37 +91,43 @@ The frontend defines typed interfaces for each SSE event type. These are used to
 
 | Type | Interface | Purpose |
 |------|-----------|---------|
-| `PROGRESS` | `ProgressSseEvent` — `{type: 'PROGRESS', sessionId?, payload: string}` | Step progress update |
-| `CONTENT` | `ContentSseEvent` — `{type: 'CONTENT', sessionId?, payload: string}` | Streaming content chunk |
-| `REPORT_START` | `ReportStartSseEvent` — `{type: 'REPORT_START', sessionId?}` | Report synthesis started |
-| `REPORT_CHUNK` | `ReportChunkSseEvent` — `{type: 'REPORT_CHUNK', sessionId?, payload: string}` | Report text chunk |
-| `REPORT_DONE` | `ReportDoneSseEvent` — `{type: 'REPORT_DONE', sessionId?, payload: string}` | Report generation complete |
-| `STEP_COMPLETE` | `StepCompleteSseEvent` — `{type: 'STEP_COMPLETE', sessionId?, payload: Record<string, unknown>}` | Step completion metadata |
+| `PROGRESS` | `ProgressSseEvent` — `{type: 'PROGRESS', sessionId?, payload: string}` | Step progress update (start/transition) |
+| `CONTENT` | `ContentSseEvent` — `{type: 'CONTENT', sessionId?, payload: string}` | Streaming content chunk from sub-topic research |
+| `REPORT_START` | `ReportStartSseEvent` — `{type: 'REPORT_START', sessionId?}` | Report synthesis started (injects "Generating Report" step) |
+| `REPORT_CHUNK` | `ReportChunkSseEvent` — `{type: 'REPORT_CHUNK', sessionId?, payload: string}` | Report text chunk (accumulated into report content signal + resets stall timer) |
+| `REPORT_DONE` | `ReportDoneSseEvent` — `{type: 'REPORT_DONE', sessionId?, payload: string}` | Report generation complete (sets session to COMPLETED) |
+| `STEP_COMPLETE` | `StepCompleteSseEvent` — `{type: 'STEP_COMPLETE', sessionId?, payload: Record<string, unknown>}` | Step completion metadata (multi-strategy matching in handler) |
 | `ERROR` | `ErrorSseEvent` — `{type: 'ERROR', sessionId?, payload: string}` | Error notification |
 
 ### SSE Event Handler Mapping
 
 ```typescript
 // In ResearchService.connectSse(), event listeners are mapped by type name:
-switch (event.type) {
-  case 'PROGRESS':      this.handleProgress(event);     break;
-  case 'STEP_COMPLETE': this.handleStepComplete(event); break;
-  case 'CONTENT':       this.appendContent(event.payload); break;
-  case 'REPORT_START':  /* triggers report step injection */ break;
-  case 'REPORT_CHUNK':  this.appendContent(event.payload); break;
-  case 'REPORT_DONE':   this.onReportDone(event);      break;
-  case 'ERROR':         this.onError(event);           break;
-}
+this.sseSource.addEventListener('PROGRESS',       (e) => this.handleProgress(e));
+this.sseSource.addEventListener('STEP_COMPLETE',  (e) => this.handleStepComplete(e));
+this.sseSource.addEventListener('CONTENT',        (e) => this.appendContent(data.payload));
+this.sseSource.addEventListener('REPORT_CHUNK',   (e) => { /* accumulate + reset stall timer */ });
+this.sseSource.addEventListener('REPORT_START',   (e) => { /* inject report step + start stall timer */ });
+this.sseSource.addEventListener('REPORT_DONE',    (e) => this.onReportDone(e));
+this.sseSource.addEventListener('ERROR',          (e) => this.onError(e));
 ```
 
 ### SSE Event Flow During a Research Session
 
-1. **REPORT_START** — Triggers injection of "Generating Report" step into the steps list with IN_PROGRESS status
-2. **PROGRESS** (repeated) — Updates previous steps to COMPLETED, current step to IN_PROGRESS with description; drives `progressPercent()` computed signal
-3. **CONTENT** / **REPORT_CHUNK** (streaming) — Appends raw text chunks incrementally to `_reportContentSignal` for live preview
-4. **STEP_COMPLETE** (on each step finish) — Marks corresponding step as COMPLETED by matching payload against step names via JSON.stringify + lowercase comparison (fragile approach)
-5. **REPORT_DONE** — Sets final report content, updates session status to 'COMPLETED'
-6. **ERROR** — Sends error via `error$` observable, sets session status to 'FAILED'
+1. **PROGRESS** — Updates step list: marks previous IN_PROGRESS as COMPLETED, sets current sub-topic to IN_PROGRESS; drives `progressPercent()` computed signal
+2. **CONTENT** — Appends raw text chunks incrementally to `_reportContentSignal` for live preview during sub-topic research
+3. **STEP_COMPLETE** — Marks corresponding step as COMPLETED via multi-strategy matching (string name, number index, or object key matching)
+4. **REPORT_START** — Injects "Generating Report" IN_PROGRESS step; starts 90-second stall timer
+5. **REPORT_CHUNK** (streaming) — Accumulates into `_reportContentSignal`; each chunk resets the stall timer
+6. **REPORT_DONE** — Sets final report content, updates session status to 'COMPLETED', stops streaming
+7. **ERROR** — Sends error via `error$` observable, sets session status to 'FAILED'
+
+### Stall Timer Behavior
+
+During Phase 3 (report generation), if no REPORT_CHUNK arrives within 90 seconds:
+1. Stall timer fires → emits "Report generation stalled" message via `errorSubject`
+2. Switches to polling fallback (`startPolling`)
+3. Polling detects terminal state and syncs final steps/report from backend
 
 ---
 

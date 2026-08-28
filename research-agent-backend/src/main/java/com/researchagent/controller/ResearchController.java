@@ -8,6 +8,8 @@ import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.service.ResearchOrchestratorService;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -17,15 +19,57 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/research")
 public class ResearchController {
 
+    private static final Logger log = LoggerFactory.getLogger(ResearchController.class);
+    
     private final ResearchOrchestratorService orchestratorService;
 
     public ResearchController(ResearchOrchestratorService orchestratorService) {
         this.orchestratorService = orchestratorService;
+    }
+
+    /**
+     * Delete a single historical research session (and its steps via cascade).
+     * Only works on non-running sessions (COMPLETED, FAILED, CANCELLED).
+     */
+    @DeleteMapping("/history/{sessionId}")
+    public ResponseEntity<Void> deleteHistorySession(@PathVariable UUID sessionId) {
+        ResearchSession session = orchestratorService.getResearch(sessionId);
+        if (session == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        // Check if session is still processing — should not be deletable via history endpoint
+        if ("PROCESSING".equals(session.getStatus().name())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
+
+        orchestratorService.deleteSession(sessionId);
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Bulk delete multiple historical research sessions (and their steps via cascade).
+     * All-or-nothing rollback — if any session is invalid/processing, none are deleted.
+     */
+    @PostMapping("/history/bulk-delete")
+    public ResponseEntity<Void> bulkDeleteHistorySessions(@RequestBody List<UUID> sessionIds) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        try {
+            orchestratorService.deleteSessionsInBulk(sessionIds);
+            return ResponseEntity.noContent().build();
+        } catch (IllegalStateException e) {
+            log.error("Bulk delete failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
     }
 
     /**
@@ -132,7 +176,7 @@ public class ResearchController {
         dto.setTopic(session.getTopic());
         dto.setStatus(session.getStatus().name());
         dto.setPrompt(session.getPrompt());
-        dto.setFinalReport(session.getFinalReport());
+       // dto.setFinalReport(session.getFinalReport());
         dto.setCreatedAt(session.getCreatedAt());
         dto.setUpdatedAt(session.getUpdatedAt());
         dto.setCompletedAt(session.getCompletedAt());

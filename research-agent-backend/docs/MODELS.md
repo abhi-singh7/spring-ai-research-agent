@@ -39,7 +39,7 @@
 
 ## Enums
 
-### ResearchStatus (ENUM → VARCHAR mapping)
+### ResearchStatus (Entity Enum)
 
 | Value | Meaning | Transitions From |
 |-------|---------|------------------|
@@ -47,15 +47,18 @@
 | `PROCESSING` | Research is actively running | PENDING |
 | `COMPLETED` | Research finished successfully | PROCESSING (only) |
 | `FAILED` | Research failed due to an error | PROCESSING (on exception) |
-| `CANCELLED` | Research cancelled by user | PROCESSING (via DELETE endpoint) |
+| `CANCELLED` | Research cancelled by user or cleanup scheduler | PROCESSING (via DELETE endpoint or `AbandonedSessionCleanupService`) |
 
-### StepType (ENUM → VARCHAR mapping)
+### StepType (Entity Enum)
 
 | Value | Meaning | Phase |
 |-------|---------|-------|
 | `BREAKDOWN` | Topic breakdown into sub-topics | Phase 1 |
 | `SUBTOPIC` | Individual sub-topic research | Phase 2 |
-| `FINAL_REPORT` | Final report synthesis | Phase 3 |
+| `SEARCH` | Web search via MCP/local tools | Phase 2 (within SUBTOPIC) |
+| `READ` | URL content extraction via MCP/local tools | Phase 2 (within SUBTOPIC) |
+| `SYNTHESIS` | Finding synthesis | Phase 3 |
+| `FINAL_REPORT` | Final report generation | Phase 3 |
 
 ---
 
@@ -80,11 +83,27 @@ public class ResearchResponse {
     String topic;                                // Original research topic
     String status;                               // Current session status (ResearchStatus enum name)
     LocalDateTime createdAt;                     // Creation timestamp
-    LocalDateTime updatedAt;                     // Last update timestamp
     LocalDateTime completedAt;                   // Completion/failure timestamp (nullable)
     String finalReport;                          // Synthesized report content (nullable)
-    String streamUrl;                            // SSE stream URL (not populated in current impl)
     List<StepDTO> steps;                         // Current step list for this session
+}
+```
+
+### ResearchSessionDetailDTO — Full Session Detail with Steps and Content
+
+Used by `GET /api/research/history/{sessionId}` to return the complete session view including prompt, final report, and all step content.
+
+```java
+public class ResearchSessionDetailDTO {
+    String id;                                   // Session UUID
+    String topic;                                // Original research topic
+    String status;                               // Current session status
+    String prompt;                               // System prompt used for this session
+    String finalReport;                          // Synthesized report content (nullable)
+    LocalDateTime createdAt;                     // Creation timestamp
+    LocalDateTime updatedAt;                     // Last update timestamp
+    LocalDateTime completedAt;                   // Completion/failure timestamp (nullable)
+    List<StepDTO> steps;                         // Full step list with content included
 }
 ```
 
@@ -93,15 +112,11 @@ public class ResearchResponse {
 ```java
 public class StepDTO {
     Integer orderIndex;                          // Step ordinal position within session
-    String type;                                 // StepType enum name (BREAKDOWN/SUBTOPIC/FINAL_REPORT)
+    String type;                                 // StepType enum name (BREAKDOWN/SUBTOPIC/SEARCH/READ/SYNTHESIS/FINAL_REPORT)
     String status;                               // Step state: PENDING/RUNNING/COMPLETED/FAILED
     String content;                              // Step output content (nullable if step failed early)
 }
 ```
-
-### ResearchSession — Entity Returned Directly for Some Operations
-
-Returned as-is from repository queries. Contains all entity fields plus the bidirectional `steps` list.
 
 ### StreamUpdate — SSE Event Payload
 
@@ -109,7 +124,7 @@ Returned as-is from repository queries. Contains all entity fields plus the bidi
 public class StreamUpdate {
     EventType type;                              // Type of event being sent
     UUID sessionId;                              // Session this event belongs to
-    Object payload;                              // Event-specific data (String for most events, Map for STEP_COMPLETE)
+    Object payload;                              // Event-specific data (String for most, Map for STEP_COMPLETE)
 }
 ```
 
@@ -117,15 +132,15 @@ public class StreamUpdate {
 
 | Value | Meaning | Payload Type |
 |-------|---------|-------------|
-| `PROGRESS` | A new step has started | String — description text |
+| `PROGRESS` | A new step has started / sub-topic transitioned | String — description text |
 | `CONTENT` | Streaming content from sub-topic research | String — raw text chunk |
 | `REPORT_START` | Final report synthesis has begun | None (null) |
 | `REPORT_CHUNK` | Raw text chunk during final report streaming | String — report chunk |
 | `REPORT_DONE` | Final report generation complete | ReportDTO or String |
-| `STEP_COMPLETE` | A step has completed processing | Map<String, Object> — step metadata |
+| `STEP_COMPLETE` | A step has completed processing | Map<String, Object> — flexible matching payload (string/number/object) |
 | `ERROR` | An error occurred during processing | String — error message |
 
-### ResearchReport (ReportDTO) — Report Payload for REPORT_DONE Event
+### ReportDTO — Report Payload for REPORT_DONE Event
 
 ```java
 public class ReportDTO {
@@ -152,9 +167,9 @@ This model is used internally by `ResearchOrchestratorService` for JSON parsing 
 
 ```java
 public static class SubTopic {
-    String id;        // Unique identifier within this session
-    String title;     // Short title of the sub-topic
-    String description; // Brief description of what to research in this sub-topic
+    String id;            // Unique identifier within this session
+    String title;         // Short title of the sub-topic
+    String description;   // Brief description of what to research in this sub-topic
 }
 ```
 
@@ -162,3 +177,18 @@ When JSON parsing fails, a fallback creates a single `SubTopic` with:
 - `id`: "1"
 - `title`: The original request topic (from `request.getTopic()`)
 - `description`: The raw unparsed LLM response string (fragile — not validated)
+
+---
+
+## Internal Step Name Mapping
+
+The frontend maps backend step types to human-readable names via `getStepName()` in the ResearchService:
+
+| Backend Type | Frontend Display Name |
+|-------------|----------------------|
+| BREAKDOWN | Breakdown |
+| SUBTOPIC | Sub-topic {n} (numbered dynamically) |
+| SEARCH | Search |
+| READ | Read URL |
+| SYNTHESIS | Synthesis |
+| FINAL_REPORT | Generating Report |

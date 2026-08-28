@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Angular frontend uses **Signal-based reactive state management** exclusively. There are no NgRx stores, BehaviorSubject patterns (beyond one RxJS Subject for errors), or Redux-style reducers. All application state is centralized in a single `ResearchService` singleton and exposed via Angular Signals.
+The Angular frontend uses **Signal-based reactive state management** exclusively. There are no NgRx stores, BehaviorSubject patterns (beyond one RxJS Subject for errors), or Redux-style reducers. All application state is centralized in a single `ResearchService` singleton and exposed via Angular Signals. History-specific state is managed separately in `ResearchHistoryService`.
 
 ---
 
@@ -26,6 +26,7 @@ The Angular frontend uses **Signal-based reactive state management** exclusively
 │  │                                                     ││
 │  │  progressPercent     computed<number>               ││
 │  │  activeStepIndex     computed<number>               ││
+│  │  shouldDisplayStreamingContent computed<boolean>    ││
 │  └─────────────────────────────────────────────────────┘│
 │                                                         │
 │  ┌───────────────── Reactive Stream ───────────────────┐│
@@ -35,8 +36,9 @@ The Angular frontend uses **Signal-based reactive state management** exclusively
 │                                                         │
 │  ┌────────────── Procedural Side-Effects ──────────────┐│
 │  │                                                     ││
-│  │  sse: EventSource              (SSE connection)     ││
-│  │  pollingInterval: number       (polling timer)      ││
+│  │  sseSource: EventSource            (SSE connection) ││
+│  │  stallTimer: number                (stall detection)││
+│  │  pollingTimer: number              (polling timer)  ││
 │  └─────────────────────────────────────────────────────┘│
 └───────────────────────────────────────────────────────────┘
 ```
@@ -59,13 +61,29 @@ These are the core state variables that components read from. They are updated i
 
 These signals automatically recalculate when their dependencies change. Components bind directly to them in templates without needing manual subscription management.
 
-- **`progressPercent: computed<number>`** — The progress bar value, derived from the step list. Calculates `(completedSteps + (hasInProgress ? 0.5 : 0)) / totalSteps * 100`. Gives smooth transitions because the in-progress step counts as half a completed step. Automatically recalculates whenever `researchSteps()` changes.
+- **`progressPercent: computed<number>`** — The progress bar value, derived from the step list. Calculates `(completedSteps + sum(inProgressCount * 0.5)) / totalSteps * 100`. Gives smooth transitions because each in-progress step counts as half a completed step. Automatically recalculates whenever `researchSteps()` changes.
 
-- **`activeStepIndex: computed<number>`** — The index of the currently active (IN_PROGRESS) step, derived from the step list. Returns -1 if no step is in progress. Automatically recalculates when `researchSteps()` changes. Components bind to this for rendering the highlighted step badge.
+- **`activeStepIndex: computed<number>`** — The index of the currently active (IN_PROGRESS) step, derived from the step list. Returns -1 if no step is in progress. Components bind to this for rendering the highlighted step badge.
+
+- **`shouldDisplayStreamingContent: computed<boolean>`** — True when session exists, status is PROCESSING, and finalReport has not been received yet. Used by components to show/hide live content preview before the full report is ready.
 
 #### Reactive Stream
 
 - **`error$: Observable<string>`** — An RxJS Subject that emits error messages. Used by components (e.g., ActiveResearchComponent) to display error notifications from SSE or other sources. The only RxJS observable in the service — all other state is Signal-based.
+
+### ResearchHistoryService — Separate State for History List
+
+```
+ResearchHistoryService
+│
+├── sessions = signal<HistoryItem[]>([])        // Current page's session list
+├── currentPage = signal<number>(0)             // Zero-based page index
+├── totalPages = signal<number>(1)              // Total available pages
+├── totalElements = signal<number>(0)           // Total sessions across all pages
+└── searchTerm: string | undefined              // Current search filter (undefined = no filter)
+```
+
+History state is **not** part of the central ResearchService — it lives in its own service since history operations are independent of active research session management.
 
 ---
 
@@ -104,17 +122,17 @@ For example, if a template binds `[value]="progressPercent()"`, the progress bar
 
 ```
 SSE Event               Signal Update                    Component Effect
-─────────────           ───────────────                    ───────────────
+────────────           ───────────────                    ───────────────
 PROGRESS (step start)   _researchStepsSignal.update()      progressPercent() recalculates
-                          // Previous step: COMPLETED      activeStepIndex() recalculates
-                          // Current step: IN_PROGRESS
+                           // Previous step: COMPLETED      activeStepIndex() recalculates
+                           // Current step: IN_PROGRESS
 STEP_COMPLETE           _researchStepsSignal.update()      Same as above
 REPORT_START            _researchStepsSignal.add()         New "Generating Report" step appears
-                          (injects a new step)
+                           (injects a new step)
 CONTENT / REPORT_CHUNK  _reportContentSignal.update()      Live preview of report text
-                          // Append to existing content
+                           // Append to existing content
 REPORT_DONE             researchSession.update()           Session status → COMPLETED
-                          + reportContent update
+                           + reportContent update
 ERROR                   error$.next()                     Error notification displayed
 ```
 
@@ -124,9 +142,9 @@ ERROR                   error$.next()                     Error notification dis
 
 When a new step begins (PROGRESS event):
 
-1. Parse the event payload to extract step metadata (step type and index)
-2. Find the previous IN_PROGRESS step in `_researchStepsSignal` and update it to COMPLETED
-3. Find or create the current step at `orderIndex = event.payload.index + 1` and set status to IN_PROGRESS with description from payload
+1. If no steps exist yet, create the first dynamic "Researching Sub-topics" IN_PROGRESS step
+2. Detect sub-topic completion messages ("Completed research on: X") to transition from one sub-topic step to the next
+3. Otherwise, update existing IN_PROGRESS step's description or create a new IN_PROGRESS step for the current sub-topic
 
 ```typescript
 // Pseudo-code of the signal update logic:
@@ -140,19 +158,12 @@ this._researchStepsSignal.update(steps => {
   });
 
   // Find or create the current IN_PROGRESS step
-  const currentIndex = event.payload.index + 1;
-  let found = updated.find(s => s.orderIndex === currentIndex);
-  
-  if (!found) {
-    // Create new step at this index
-    added = true;
-    return [...updated, { orderIndex: currentIndex, status: 'IN_PROGRESS', description }];
-  } else {
-    // Update existing step
-    found.status = 'IN_PROGRESS';
-    found.description = description;
-    return updated;
+  // Only if there isn't already an IN_PROGRESS step (e.g., REPORT_START may have added it)
+  const hasInProgress = steps.some(s => s.status === 'IN_PROGRESS');
+  if (!hasInProgress) {
+    return [...updated, { stepNumber: updated.length + 1, name: 'Researching X', status: 'IN_PROGRESS' }];
   }
+  return updated;
 });
 ```
 
@@ -161,12 +172,11 @@ this._researchStepsSignal.update(steps => {
 When a streaming content event arrives (CONTENT or REPORT_CHUNK):
 
 1. Read the current signal value via `_reportContentSignal()`
-2. Append the new chunk to the existing content using `String.prototype.concat()`
-3. Update the signal with the concatenated result
+2. Append the new chunk to the existing content using signal's `update()` method
+3. Return concatenated result as the new signal value
 
 ```typescript
 // Pseudo-code of the append logic:
-const current = this._reportContentSignal();
 this._reportContentSignal.update(prev => prev + payload);
 ```
 
@@ -176,9 +186,11 @@ this._reportContentSignal.update(prev => prev + payload);
 
 When the final report generation completes (REPORT_DONE event):
 
-1. Update `researchSession` with the new session state via `this.researchSession.update()`
-2. Set `_reportContentSignal` to the complete report content from the event payload
-3. Set `isStreaming` to false
+1. Update `_reportContentSignal` to the complete report content from the event payload
+2. Clear any pending stall timer
+3. Mark all IN_PROGRESS steps as COMPLETED
+4. Set `researchSession` status to 'COMPLETED'
+5. Set `isStreaming` to false
 
 ---
 
@@ -226,23 +238,19 @@ The progress bar uses a smooth transition approach with half-weight for in-progr
 progressPercent = computed(() => {
   const steps = this.researchSteps();
   
-  if (steps.length === 0) return 0;
+  if (!steps.length) return 0;
   
   let completedCount = 0;
-  let hasInProgressStep = false;
+  let inProgressCount = 0;
   
-  // Count completed steps and check for in-progress step
+  // Count completed and in-progress steps
   for (const step of steps) {
-    if (step.status === 'COMPLETED') {
-      completedCount++;
-    }
-    if (step.status === 'IN_PROGRESS') {
-      hasInProgressStep = true;
-    }
+    if (step.status === 'COMPLETED') completedCount++;
+    if (step.status === 'IN_PROGRESS') inProgressCount++;
   }
   
-  // In-progress step counts as half a completed step for smooth transitions
-  const progressValue = completedCount + (hasInProgressStep ? 0.5 : 0);
+  // In-progress steps count as half a completed step for smooth transitions
+  const progressValue = completedCount + (inProgressCount * 0.5);
   
   return Math.round((progressValue / steps.length) * 100);
 });
@@ -250,7 +258,7 @@ progressPercent = computed(() => {
 
 **Example calculations:**
 - All steps pending: `progressPercent = 0%`
-- 2 of 5 completed, 1 in progress: `(2 + 0.5) / 5 * 100 = 50%` (smooth transition from 40% when only 2 were complete)
+- 2 of 5 completed, 1 in progress: `(2 + 1*0.5) / 5 * 100 = 50%` (smooth transition from 40% when only 2 were complete)
 - All steps completed: `progressPercent = 100%`
 
 ---
@@ -292,20 +300,24 @@ The `error$` observable exists because:
    - Calls connectSse(sessionId) — establishes SSE connection
    
 3. SSE connects, first PROGRESS event arrives:
-   → _researchStepsSignal.update() adds BREAKDOWN step as IN_PROGRESS
-   → progressPercent recalculates → 10% (half of one step out of five)
+   → _researchStepsSignal.update() adds "Researching Sub-topics" as IN_PROGRESS
+   → progressPercent recalculates → ~10% (half of one step out of total)
    
 4. Subsequent events during research:
    → Each PROGRESS/STEP_COMPLETE updates _researchStepsSignal
    → progressPercent and activeStepIndex recalculate automatically
    → CONTENT/REPORT_CHUNK append to _reportContentSignal incrementally
    
-5. REPORT_DONE event arrives (session complete):
+5. REPORT_START arrives (Phase 3 begins):
+   → "Generating Report" step injected as IN_PROGRESS
+   → Stall timer started (90s without chunks → polling fallback)
+   
+6. REPORT_DONE event arrives (session complete):
    → researchSession updated with COMPLETED status + finalReport content
    → isStreaming set to false
    → reportContent fully populated
    
-6. User navigates away from the page:
+7. User navigates away from the page:
    → DestroyRef.onDestroy() triggers disconnectSse() and stopPolling()
    → All signals are cleaned up, no memory leaks
 ```

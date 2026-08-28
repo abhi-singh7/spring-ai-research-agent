@@ -12,6 +12,8 @@ body {
 body {
   margin: 0;
   font-family: Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Constrain code blocks from overflowing their container in ngx-markdown */
@@ -27,4 +29,64 @@ code {
 .markdown-body {
   max-width: 100% !important;
   overflow-x: hidden !important;
+}
+
+/* Global scrollbar styling for a cleaner look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.2);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.35);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.2) transparent;
+}
+
+/* Global focus ring for accessibility — subtle indigo glow */
+:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.5);
+  outline-offset: 2px;
+}
+
+/* Smooth transitions on all interactive elements */
+a, button, input, select, mat-form-field {
+  transition: all 0.2s ease;
+}
+
+/* Snackbar panel classes for success/error states — Material M3 style */
+.success-snackbar::ng-deep .mdc-snackbar__surface {
+  background-color: #4caf50 !important; /* Green for success */
+  border-radius: 12px !important;
+}
+
+.error-snackbar::ng-deep .mdc-snackbar__surface {
+  background-color: #f44336 !important; /* Red for error */
+  border-radius: 12px !important;
+}
+
+/* Dark mode snackbar adjustments — let Material's dark theme handle it via panelClass, but override if needed */
+@media (prefers-color-scheme: dark) {
+  .success-snackbar::ng-deep .mdc-snackbar__surface { background-color: #2e7d32 !important; }
+  .error-snackbar::ng-deep .mdc-snackbar__surface { background-color: #c62828 !important; }
+}
+
+/* Ensure snackbar text is readable */
+.success-snackbar::ng-deep .mdc-button__label,
+.error-snackbar::ng-deep .mdc-button__label {
+  color: white !important;
 }

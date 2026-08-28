@@ -16,8 +16,10 @@ No authentication is implemented in the current version. The service relies on C
 
 | Status Code | Meaning |
 |-------------|---------|
-| 400 | Bad Request — invalid input, session not in expected state (e.g., cancel a non-PROCESSING session) |
+| 400 | Bad Request — invalid input, session not in expected state (e.g., cancel a non-PROCESSING session, bulk delete with empty body) |
+| 401/403 | Not applicable — no auth implemented |
 | 404 | Not Found — research session does not exist |
+| 409 | Conflict — trying to delete a PROCESSING session (single or bulk) |
 | 500 | Internal Server Error — LLM call failure or unexpected backend error |
 
 ---
@@ -26,7 +28,7 @@ No authentication is implemented in the current version. The service relies on C
 
 ### `POST /api/research` — Start New Research Session
 
-Starts a new research task. The response is returned **immediately** with status `PROCESSING`; the session will complete asynchronously via SSE events.
+Starts a new research task. The response is returned **immediately** with status `PROCESSING`; the session completes asynchronously via SSE events.
 
 - **Request Body**: `ResearchRequest`
   - `topic` (string, required) — The research topic to investigate
@@ -39,13 +41,7 @@ Starts a new research task. The response is returned **immediately** with status
   {
     "id": "a3f1b2c4-d5e6-f789-abcd-ef0123456789",
     "topic": "AI in Healthcare",
-    "status": "PROCESSING",
-    "createdAt": "2026-06-03T10:00:00Z",
-    "updatedAt": "2026-06-03T10:00:00Z",
-    "completedAt": null,
-    "finalReport": null,
-    "streamUrl": "",
-    "steps": []
+    "status": "PROCESSING"
   }
   ```
 
@@ -53,7 +49,7 @@ Starts a new research task. The response is returned **immediately** with status
 
 ### `GET /api/research/{sessionId}` — Get Research Session Status
 
-Retrieves the current state of a research session. The response reflects real-time progress as SSE events are processed.
+Retrieves the current state of a research session. Reflects real-time progress as SSE events are processed.
 
 - **Path Parameter**: `sessionId` (UUID, required)
 
@@ -63,23 +59,19 @@ Retrieves the current state of a research session. The response reflects real-ti
     "id": "a3f1b2c4-d5e6-f789-abcd-ef0123456789",
     "topic": "AI in Healthcare",
     "status": "PROCESSING",
-    "createdAt": "2026-06-03T10:00:00Z",
-    "updatedAt": "2026-06-03T10:05:00Z",
+    "createdAt": "2026-06-03T10:00:00",
     "completedAt": null,
     "finalReport": null,
-    "streamUrl": "",
     "steps": [
       {
         "orderIndex": 1,
         "type": "BREAKDOWN",
-        "status": "COMPLETED",
-        "content": "[{\"id\":1,\"title\":\"Sub-topic A\",\"description\":\"...\"}]"
+        "status": "COMPLETED"
       },
       {
         "orderIndex": 2,
         "type": "SUBTOPIC",
-        "status": "IN_PROGRESS",
-        "content": null
+        "status": "RUNNING"
       }
     ]
   }
@@ -116,17 +108,13 @@ Returns a paginated list of all research sessions ordered by creation date (desc
         "id": "a3f1b2c4-d5e6-f789-abcd-ef0123456789",
         "topic": "AI in Healthcare",
         "status": "COMPLETED",
-        "createdAt": "2026-06-03T10:00:00Z",
-        "updatedAt": "2026-06-03T10:05:00Z",
-        "completedAt": "2026-06-03T10:05:00Z"
+        "createdAt": "2026-06-03T10:00:00",
+        "updatedAt": "2026-06-03T10:05:00",
+        "completedAt": "2026-06-03T10:05:00"
       }
     ],
     "totalPages": 1,
-    "totalElements": 1,
-    "currentPage": 0,
-    "size": 20,
-    "first": true,
-    "last": true
+    "totalElements": 1
   }
   ```
 
@@ -145,21 +133,79 @@ Searches research sessions by topic name (case-insensitive). Returns paginated r
 
 ---
 
-### `GET /api/research/{sessionId}/report` — Get Final Report
+### `GET /api/research/history/{sessionId}` — Get Historical Session Detail
 
-Retrieves the synthesized research report for a completed session.
+Returns a single research session with full step details. Uses `ResearchSessionDetailDTO`.
 
 - **Path Parameter**: `sessionId` (UUID, required)
 
-- **Response**: `200 OK` — Raw text of the final report
-- **Response**: `400 Bad Request` — Session not yet COMPLETED
-- **Response**: `404 Not Found` — No report exists for this session
+- **Response**: `200 OK` — `ResearchSessionDetailDTO`
+  ```json
+  {
+    "id": "...",
+    "topic": "AI in Healthcare",
+    "status": "COMPLETED",
+    "prompt": "...",
+    "finalReport": "# Report content...",
+    "createdAt": "2026-06-03T10:00:00",
+    "updatedAt": "2026-06-03T10:05:00",
+    "completedAt": "2026-06-03T10:05:00",
+    "steps": [
+      {
+        "orderIndex": 1,
+        "type": "BREAKDOWN",
+        "status": "COMPLETED",
+        "content": "[{\"id\":\"1\",\"title\":\"...\"}]"
+      }
+    ]
+  }
+  ```
+
+- **Response**: `404 Not Found` — Session not found
+
+---
+
+### `DELETE /api/research/history/{sessionId}` — Delete Single Historical Session
+
+Deletes a single historical session (and its steps via cascade). Only works on non-running sessions (COMPLETED, FAILED, CANCELLED). Returns 409 Conflict if the session is still PROCESSING.
+
+- **Path Parameter**: `sessionId` (UUID, required)
+- **Response**: `204 No Content` — Deleted successfully
+- **Response**: `404 Not Found` — Session not found
+- **Response**: `409 Conflict` — Session is still PROCESSING
+
+---
+
+### `POST /api/research/history/bulk-delete` — Bulk Delete Sessions
+
+Bulk deletes multiple sessions in a single operation. All-or-nothing rollback — if any session is invalid or still PROCESSING, none are deleted. Returns 409 Conflict with rolled-back state.
+
+- **Request Body**: Array of UUIDs
+  ```json
+  ["uuid-1", "uuid-2", "uuid-3"]
+  ```
+
+- **Response**: `204 No Content` — All sessions deleted successfully
+- **Response**: `400 Bad Request` — Empty or null request body
+- **Response**: `409 Conflict` — One or more sessions are still PROCESSING (all rolled back)
+
+---
+
+### `GET /api/research/{sessionId}/report` — Get Final Report
+
+Retrieves the synthesized research report for a completed session. Falls back to generating from collected sub-topic findings if no final report exists.
+
+- **Path Parameter**: `sessionId` (UUID, required)
+
+- **Response**: `200 OK` — Raw markdown text of the final report
+- **Response**: `400 Bad Request` — Session not yet COMPLETED or not found
+- **Response**: `404 Not Found` — No report available and no sub-topic findings to generate from
 
 ---
 
 ### `POST /api/research/{sessionId}/followup` — Submit Follow-Up Question
 
-Submits a follow-up question about the research findings of a completed session. The LLM answers based on the previous research report and the new question.
+Submits a follow-up question about the research findings of a completed session. The LLM answers based on the previous research report (truncated to 2000 chars) and the new question.
 
 - **Path Parameter**: `sessionId` (UUID, required)
 
@@ -179,11 +225,11 @@ Submits a follow-up question about the research findings of a completed session.
 
 ### `GET /api/research/stream/{sessionId}` — Subscribe to Real-Time Progress Events
 
-Establishes a Server-Sent Events connection for real-time progress updates. The client receives typed events as the research progresses through its phases.
+Establishes a Server-Sent Events connection for real-time progress updates. Note: This endpoint uses a standalone SseEmitter in `ResearchStreamController` that is **not wired** into the actual streaming service (`ResearchStreamingService`). The frontend connects here but events are sent via `ResearchOrchestratorService` → `ResearchStreamingService.sendReportChunk()` etc.
 
 - **Path Parameter**: `sessionId` (UUID, required)
 - **Produces**: `text/event-stream`
-- **Timeout**: 10 minutes (`600000ms`) — the SseEmitter will close after this period of inactivity
+- **Timeout**: 10 minutes (`600000ms`) — the SseEmitter closes after this period of inactivity
 
 ---
 
@@ -201,48 +247,34 @@ All events use the following structure:
 
 ### `PROGRESS`
 
-Sent when a new research step begins. The payload is a description string.
-
-- **Payload**: `"Researching: Sub-topic A"` — Indicates the start of sub-topic research
+Sent when a new research step begins or a sub-topic transitions. The payload is a description string (e.g., `"Researching: Sub-topic A"` for start, `"Completed research on: Sub-topic A"` for completion).
 
 ### `STEP_COMPLETE`
 
-Sent when a step finishes processing. The payload contains metadata about the completed step.
-
-- **Payload**: `{"step": "SUBTOPIC", "index": 2, "status": "COMPLETED"}` — Step completion details
+Sent when a step finishes processing. Payload contains metadata about the completed step — may be a string (step name), number (index/stepNumber), or object with keys like `stepName`, `name`, `index`, `stepNumber`. Frontend uses multi-strategy matching to identify which step was completed.
 
 ### `CONTENT`
 
-Sent during streaming of sub-topic findings (raw content chunks).
-
-- **Payload**: `"According to recent studies..."` — Content chunk from the LLM response
+Sent during streaming of sub-topic findings (raw content chunks). Payload is a text chunk from the LLM response.
 
 ### `REPORT_START`
 
-Sent when the final report synthesis begins. No payload is included.
-
-- **Payload**: None
+Sent when the final report synthesis begins. Triggers frontend to inject "Generating Report" step into the steps list with IN_PROGRESS status and start a stall timer (90s without chunks → force polling fallback). No payload data needed.
 
 ### `REPORT_CHUNK`
 
-Sent during streaming of the final research report (raw text chunks).
-
-- **Payload**: `"## Executive Summary\n\n..."` — Report content chunk
+Sent during streaming of the final research report. Payload is a raw text chunk that gets accumulated into the report content signal on the frontend. Each chunk also resets the stall timer.
 
 ### `REPORT_DONE`
 
-Sent when the final report is complete. The payload contains the full report text.
-
-- **Payload**: Complete synthesized research report as markdown text
+Sent when the final report is complete. Payload contains the full synthesized report as markdown text. Updates session status to COMPLETED and sets isStreaming to false.
 
 ### `ERROR`
 
-Sent if an error occurs during processing.
-
-- **Payload**: Error message string
+Sent if an error occurs during processing. Payload is the error message string. Sets session status to FAILED on frontend.
 
 ---
 
 ## Data Models
 
-See [models.md](./MODELS.md) for detailed model definitions with all fields, types, and constraints.
+See [MODELS.md](./MODELS.md) for detailed model definitions with all fields, types, and constraints.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Angular frontend is a single-page application that provides real-time visualization of research sessions, including step-by-step progress tracking and streaming report display. It communicates with the backend via REST API (for status queries) and SSE (for real-time progress updates).
+The Angular frontend is a single-page application that provides real-time visualization of research sessions, including step-by-step progress tracking and streaming report display. It communicates with the backend via REST API (for status queries) and SSE (for real-time progress updates), with automatic fallback to polling on connection failure.
 
 ## System Architecture
 
@@ -28,7 +28,7 @@ The Angular frontend is a single-page application that provides real-time visual
 │  │ ResearchService (Singleton,           │    │
 │  │ providedIn: root)                     │    │
 │  │ - Signals + Computed                 │    │
-│  │ - SSE connection management          │    │
+│  │ - SSE connection with reconnection   │    │
 │  │ - Polling fallback                   │    │
 │  └──────────────┬─────────────────────┘    │
 │                 │                           │
@@ -38,11 +38,11 @@ The Angular frontend is a single-page application that provides real-time visual
 │  │ setInterval (polling fallback)      │    │
 │  └─────────────────────────────────────┘    │
 └──────────────────┬──────────────────────────┘
-                   │ proxy.conf.json: /api → localhost:8080
-           ┌───────▼───────┐
-           │ Spring Boot   │
-           │ Backend       │
-           └───────────────┘
+                    │ proxy.conf.json: /api → localhost:8080
+            ┌───────▼───────┐
+            │ Spring Boot   │
+            │ Backend       │
+            └───────────────┘
 ```
 
 ## Component Architecture
@@ -54,7 +54,7 @@ The Angular frontend is a single-page application that provides real-time visual
 The primary view for an active research session. Displays:
 1. Back button to `/research/history`
 2. Status header card with topic title and color-coded status chip
-3. Determinate progress bar (only visible while streaming)
+3. Determinate progress bar (only visible while streaming), bound to computed `progressPercent()` signal
 4. `<step-list>` component bound to signals from `ResearchService`
 5. `<report-viewer>` component — shown only when session is COMPLETED and has a final report
 6. Cancel button during active research
@@ -76,28 +76,37 @@ Form component for submitting a new research topic. Contains:
 
 **Key logic:**
 - On submit: calls `researchSession.startResearch()` with form values as `ResearchStartRequest`
-- After session creation, navigates to `/research/{sessionId}` — **Note:** The current implementation has a placeholder stub (`setTimeout`) instead of actual API call
+- After session creation, navigates to `/research/{sessionId}` — SSE connection is initiated inside ResearchService
 
-#### `ResearchHistoryComponent` — Research History List
+#### `ResearchHistoryComponent` — Research History List (Fully Implemented)
 
-Paginated list view of all research sessions. Contains:
-1. Search input with `onSearch()` callback (stubbed)
+Paginated list view of all research sessions. Fully connected to the backend via `ResearchHistoryService`. Contains:
+1. Search input that triggers debounced API search via `loadHistory(page, searchTerm)`
 2. Session cards showing topic, status chip, and date
-3. Pagination controls (placeholder, not implemented)
+3. Pagination controls (Previous/Next buttons)
+4. Selection mode with checkboxes for bulk multi-select delete
+5. Single-delete per item with `MatDialog` confirmation dialog
+6. Bulk-delete action bar with Select All / Deselect All
 
 **Key logic:**
-- **Note:** The current implementation uses hardcoded placeholder data instead of API calls — this is marked as TODO
+- Uses `ResearchHistoryService.sessions` signal for reactive data binding
+- Selection state managed via local `Set<string>` of selected session IDs, tracked by computed signals (`selectionCount()`, `hasSelection()`)
+- Single delete opens `DeleteConfirmationDialogComponent` showing topic name; confirms before calling `historyService.deleteSession()`
+- Bulk delete collects all selected IDs and calls `historyService.bulkDeleteSessions(ids)` with rollback on conflict (409)
 
 #### `HistoryDetailComponent` — Historical Session Detail View
 
-Detailed view for a completed or failed session. Contains:
+Detailed view for a completed, failed, or cancelled session. Contains:
 1. Back button to `/research/history`
 2. Session info card with topic + status chip
-3. `<report-viewer>` if report exists
-4. `<followup-form>` component — shown only for COMPLETED sessions (for asking questions about past research)
+3. `<step-list>` showing historical steps from the detail endpoint response
+4. `<report-viewer>` if report exists
+5. `<followup-form>` component — shown only for COMPLETED sessions (for asking questions about past research)
 
 **Key logic:**
-- **Note:** The current implementation has a placeholder null value for `researchSession` and stubbed navigation — needs ResearchService integration
+- Fetches session via `ResearchHistoryService.getHistoricalSession()` which calls `/api/research/history/{sessionId}`
+- Maps backend step data to frontend `ResearchStep[]` format using `getStepName()` for display names
+- Follow-up form posts question to `/api/research/{sessionId}/followup` and displays the answer
 
 ### Shared Components (Standalone, Reusable)
 
@@ -137,7 +146,7 @@ Inline form for submitting follow-up questions about past research. Two display 
 
 **Key logic:**
 - On submit: calls `researchSession.submitFollowUp(sessionId(), question)` which returns an Observable
-- After receiving answer, updates local state to display mode 1
+- After receiving answer, updates local state to display mode 1 (answer mode)
 
 ---
 
@@ -170,8 +179,11 @@ ResearchService (Singleton, providedIn: root)
 │   │       (completedSteps + (hasInProgress ? 0.5 : 0)) / totalSteps * 100
 │   │       Gives smooth transitions: in-progress step counts as half a completed step
 │   │
-│   └── activeStepIndex — computed<number>
-│           Index of the step where status === 'IN_PROGRESS', -1 if none found
+│   ├── activeStepIndex — computed<number>
+│   │           Index of the step where status === 'IN_PROGRESS', -1 if none found
+│   │
+│   └── shouldDisplayStreamingContent — computed<boolean>
+│              True when session is PROCESSING and no finalReport yet received (shows live content preview)
 │
 ├── Reactive Stream:
 │   └── error$ — Observable<string>
@@ -192,12 +204,12 @@ ResearchService (Singleton, providedIn: root)
 
 **`progressPercent()`** — The progress bar value:
 - Counts steps where status === 'COMPLETED' (full weight)
-- Adds 0.5 if any step has status === 'IN_PROGRESS' (half-weight for smooth transition)
+- Adds 0.5 for each step with status === 'IN_PROGRESS' (half-weight per in-progress step for smooth transition)
 - Divides by total steps and multiplies by 100
 
 Example: If there are 5 steps, with 3 completed and 1 in-progress:
 ```
-progressPercent = (3 + 0.5) / 5 * 100 = 70%
+progressPercent = (3 + 1*0.5) / 5 * 100 = 70%
 ```
 
 **`activeStepIndex()`** — The currently active step index for rendering the progress indicator:
@@ -231,11 +243,6 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
       // Display error message
     });
   }
-  
-  ngOnDestroy() {
-    this.errorSub?.unsubscribe();
-    this.researchSession.disconnectSse();
-  }
 }
 ```
 
@@ -249,7 +256,7 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
   
   ngOnInit() {
     // SSE connection — cleaned up when component destroyed
-    this.sseSub = this.destroyRef.onDestroy(() => {
+    this.destroyRef.onDestroy(() => {
       this.researchSession.disconnectSse();
     });
     
@@ -274,7 +281,7 @@ All routes use **lazy loading** via dynamic `import()` — no feature modules, o
 | `` (empty) | — | — | Redirect to `/research/new` |
 | `research/new` | `ResearchInputComponent` | — | New research form page |
 | `research/:sessionId` | `ActiveResearchComponent` | `sessionId: string` | Active/running session view |
-| `research/history` | `ResearchHistoryComponent` | — | History list with search |
+| `research/history` | `ResearchHistoryComponent` | — | History list with search + bulk delete |
 | `research/history/:sessionId` | `HistoryDetailComponent` | `sessionId: string` | Historical session detail + follow-up |
 | `**` (catch-all) | — | — | Redirect to `/research/new` |
 
@@ -294,56 +301,78 @@ The toolbar uses `routerLink` and `routerLinkActive="active-link"` for visual ac
 
 ## SSE Integration Strategy
 
-### Primary: EventSource API (Native Browser SSE)
+### Primary: EventSource API (Native Browser SSE) with Reconnection
 
-The service uses the browser's native `EventSource` API for SSE connections — no additional library needed. This is preferred over RxJS-based SSE because it handles reconnection automatically and requires zero configuration.
+The service uses the browser's native `EventSource` API for SSE connections. It includes robust reconnection logic with exponential backoff and a stall timer for report generation detection.
 
 ```typescript
 // In ResearchService.connectSse()
-this.sse = new EventSource(`/api/research/stream/${sessionId}`);
+this.sseSource = new EventSource(`/api/research/stream/${sessionId}`);
 
 // Listen for typed events by name (EventSource sends event names as the first field)
-this.sse.addEventListener('PROGRESS', (event: ProgressSseEvent) => {
-  this.handleProgress(event);
+this.sseSource.addEventListener('PROGRESS', (event: ProgressSseEvent) => { ... });
+this.sseSource.addEventListener('REPORT_CHUNK', (event: ReportChunkSseEvent) => {
+  this._reportContentSignal.update(content => content + data.payload);
+  // Reset stall timer on every chunk arrival
+  this.startStallTimer(sessionId);
 });
 
-// ... repeat for each event type ...
-
-// Handle connection closure — triggers polling fallback if session is not terminal
-this.sse.onclose = () => {
-  const sessionStatus = this.researchSession()?.status;
-  // If session is still PROCESSING, SSE disconnected unexpectedly → switch to polling
-  if (sessionStatus === 'PROCESSING') {
+// Exponential backoff reconnection — max 3 attempts before polling fallback
+this.sseSource.addEventListener('error', () => {
+  if (reconnectAttempts < maxReconnectAttempts) {
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 8000); // 1s, 2s, 4s, cap at 8s
+    setTimeout(() => this.connectSse(sessionId), delay);
+    reconnectAttempts++;
+  } else {
     this.startPolling(sessionId);
   }
-};
+});
+```
 
-// Handle connection error — same fallback logic
-this.sse.onerror = () => {
-  const sessionStatus = this.researchSession()?.status;
-  if (sessionStatus === 'PROCESSING') {
+### Stall Timer (90 seconds)
+
+If no `REPORT_CHUNK` arrives within 90 seconds of starting report generation, the service forces a transition to polling fallback. This handles cases where the LLM produces output but the SSE connection becomes unresponsive:
+
+```typescript
+private startStallTimer(sessionId: string): void {
+  this.stallTimer = setTimeout(() => {
+    console.warn('[ResearchService] Report generation stalled — forcing completion via polling.');
+    this.errorSubject.next('Report generation is taking longer than expected...');
     this.startPolling(sessionId);
-  }
-};
+  }, 90000);
+}
 ```
 
 ### Fallback: Polling via HttpClient (5-second interval)
 
-When SSE fails, the service automatically starts polling the `/api/research/{sessionId}` endpoint every 5 seconds. It stops polling when it detects a terminal state (COMPLETED, FAILED, or CANCELLED).
+When SSE fails or stalls, the service automatically starts polling the `/api/research/{sessionId}` endpoint every 5 seconds. It stops when it detects a terminal state (COMPLETED, FAILED, or CANCELLED). On reaching a terminal state, steps from the backend response are synced into the frontend's step signal list:
 
 ```typescript
-// In ResearchService.startPolling()
-this.pollingInterval = setInterval(() => {
+startPolling(sessionId: string): void {
+  this.pollingTimer = setInterval(() => this.pollStatus(sessionId), 5000);
+}
+
+private pollStatus(sessionId: string): void {
   this.getStatus(sessionId).subscribe(session => {
-    if (session.status === 'COMPLETED' || session.status === 'FAILED' || 
-        session.status === 'CANCELLED') {
-      clearInterval(this.pollingInterval);
+    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(session.status)) {
+      // Sync steps from backend response into frontend signal
+      const newSteps = session.steps?.map((step, i) => ({
+        stepNumber: step.orderIndex + 1,
+        name: this.getStepName(step.type),
+        status: step.status,
+        description: step.content || ''
+      })) ?? [];
+      if (newSteps.length > 0) {
+        this._researchStepsSignal.set(newSteps);
+      }
+      if (session.finalReport) {
+        this._reportContentSignal.set(session.finalReport);
+      }
       this.stopPolling();
     }
-    // Update local state with polled data
-    this.researchSession.update(session.id, session);
+    this.researchSession.set(session);
   });
-}, 5000);
+}
 ```
 
 ### Cleanup on Destroy
@@ -352,15 +381,19 @@ Both SSE connection and polling interval are cleaned up via `DestroyRef`:
 
 ```typescript
 // In ResearchService.disconnectSse() — manual cleanup (e.g., user navigates away)
-this.sse?.close();
-this.stopPolling();
+this.clearStallTimer();
+if (this.sseSource) {
+  this.sseSource.close();
+  this.sseSource = null;
+}
+// stopPolling() also clears the stall timer and polling interval
 ```
 
 ---
 
 ## Configuration Files
 
-### proxy.conf.json — Development Proxy
+### `proxy.conf.json` — Development Proxy
 
 Maps `/api/*` requests to the Spring Boot backend during development. This is necessary because the Angular dev server runs on port 4200 while the backend runs on port 8080, and CORS would block direct cross-origin requests.
 
@@ -381,7 +414,7 @@ In production, this proxy must be replaced with either:
 - A reverse proxy (nginx, Apache) that routes `/api/*` to the backend
 - CORS configuration on the backend allowing the frontend origin
 
-### environments/ — Environment-Specific Configuration
+### `environments/` — Environment-Specific Configuration
 
 | File | production | apiUrl | Purpose |
 |------|-----------|--------|---------|
@@ -390,7 +423,7 @@ In production, this proxy must be replaced with either:
 
 **Note:** The `apiUrl` is empty in both environments because the dev server proxy handles `/api` routing. In production, this should be set to the backend base URL (e.g., `https://api.example.com`).
 
-### tsconfig.json — TypeScript Configuration
+### `tsconfig.json` — TypeScript Configuration
 
 - **Strict mode**: All strict checks enabled
 - **noImplicitOverride**: Must use `override` keyword when overriding methods/properties
@@ -405,7 +438,6 @@ In production, this proxy must be replaced with either:
 - **Build output path**: `dist/research-agent-ui/`
 - **Browser entry point**: `src/main.ts`
 - **Default build**: Production mode with budget warning at 500kb for initial bundle
-- **Dev server proxy config**: References `proxy.conf.json`
 
 ### Initial Bundle Budgets
 
@@ -450,16 +482,41 @@ The app splits into the following lazy-loaded chunk groups:
 
 ---
 
-## Known TODO Items / Incomplete Implementations
+## Services
 
-Several components have placeholder/stubbed implementations that need to be connected to the ResearchService:
+### `ResearchService` (Primary — singleton, providedIn: root)
 
-1. **ResearchInputComponent.onSubmit()** — Currently has a hardcoded `setTimeout` instead of actual API call
-2. **ActiveResearchComponent.ngOnInit()** — Needs to fetch session data and connect SSE stream from the service
-3. **ActiveResearchComponent.onCancel()** — Stubbed, no implementation for cancel button
-4. **HistoryDetailComponent.researchSession** — Placeholder null value, needs ResearchService integration
-5. **HistoryDetailComponent.goBack()** — Stubbed, no navigation logic back to history list
-6. **ResearchHistoryComponent.sessions** — Hardcoded placeholder data instead of API fetch via ResearchService
-7. **FollowUpFormComponent.onAsk()** — Placeholder answer with setTimeout instead of actual API call
+Handles all research session communication:
+- **REST calls**: `startResearch()`, `getStatus()`, `cancelResearch()`, `submitFollowUp()`
+- **SSE management**: `connectSse()`, `disconnectSse()` with exponential backoff reconnection
+- **Polling fallback**: `startPolling()`, `stopPolling()`, `pollStatus()` (5-second interval)
+- **Stall detection**: 90s timer during report generation → forces polling if chunks stop arriving
+- **Signal state management**: All research session state flows through Angular signals
 
-These TODOs indicate the frontend is in an early but well-structured phase, using modern Angular 18 patterns (Signals, standalone components, lazy loading, input() API) and Material Design for the UI layer.
+### `ResearchHistoryService` (Pagination + History queries)
+
+Separate service for history-specific operations:
+- **Paginated loading**: `loadHistory(page, searchTerm?)` — fetches `/api/research/history` or search endpoint
+- **Session deletion**: `deleteSession(id)` — calls DELETE `/api/research/history/{sessionId}` with 409 handling
+- **Bulk deletion**: `bulkDeleteSessions(ids)` — calls POST `/api/research/history/bulk-delete` with all-or-nothing rollback
+
+---
+
+## Known Implementation Notes
+
+Several frontend features that were previously stubs are now fully implemented:
+
+1. **ResearchHistoryComponent** — Fully connected to backend via ResearchHistoryService; includes pagination, search, single delete (MatDialog), and bulk multi-select delete
+2. **HistoryDetailComponent** — Fetches session from `/api/research/history/{sessionId}` endpoint with steps mapped to frontend format
+3. **SSE resilience** — Exponential backoff reconnection (max 3 attempts) + stall timer (90s) for report generation
+4. **Step name mapping** — Backend step types (BREAKDOWN, SUBTOPIC, SEARCH, READ, SYNTHESIS, FINAL_REPORT) are mapped to human-readable names via `getStepName()`
+
+---
+
+## Workspace Context
+
+This project is part of a larger AI projects workspace. For cross-project context:
+
+- **[Workspace README](../../../README.md)** — Overview of all 5 projects and shared technology patterns
+- **[Workspace Architecture](../../../WORKSPACE-ARCHITECTURE.md)** — Cross-project architectural analysis, including frontend pipeline diagrams
+- **[Workspace AGENTS Guide](../../../WORKSPACE-AGENTS.md)** — AI agent guidance for navigating multiple projects in this workspace

@@ -1,5 +1,8 @@
 package com.researchagent.tool;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -8,145 +11,251 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * Spring AI Tool definitions for web search and content reading.
- * The LLM will autonomously decide when to invoke these tools during generation.
- */
 @Component
 public class WebSearchTool {
 
+    private final McpToolRouter router;
+
+    public WebSearchTool(McpToolRouter router) {
+        this.router = router;
+    }
+
     /**
-     * Search the web for information about a topic. Returns up to 5 results with titles, URLs, and descriptions.
+     * MAIN TOOL ENTRYPOINT (LLM calls this)
      */
-    @Tool(description = "Search the web for information about a topic. Returns a list of search results with titles, URLs, and brief descriptions.")
+    @Tool(description = "Search the web for information using intelligent routing.")
     public String search(
-            @ToolParam(required = true, description = "The search query to perform") String query) {
+            @ToolParam(required = true, description = "Search query") String query,
+            @ToolParam(required = false, description = "Task type: latest-information, general-search, search-fallback") String taskType
+    ) {
 
         try {
-            // Use Tavily API if configured, otherwise use DuckDuckGo-lite approach
-            String tavilyApiKey = System.getenv("TAVILY_API_KEY");
-            if (tavilyApiKey != null && !tavilyApiKey.isEmpty()) {
-                return searchViaTavily(query);
+            if (taskType == null || taskType.isBlank()) {
+                taskType = classify(query);
             }
 
-            // Fallback: simple HTTP search via web scraping
-            return searchViaHttp(query);
+            String backend = router.getPreferredServer(taskType);
+
+            if (backend == null) {
+                // Unknown task type — fall back to SearXNG directly
+                return searchViaSearxng(query);
+            }
+
+            return switch (backend) {
+                case "web_search", "searxng" -> searchViaSearxng(query);
+                default -> searchViaSearxng(query);  // SearXNG is the only local HTTP fallback
+            };
+
         } catch (Exception e) {
-            return "Error searching for '" + query + "': " + e.getMessage();
+            return "Search error: " + e.getMessage();
         }
     }
 
     /**
-     * Read the content of a URL and return it as text. Use this to read web pages for detailed information.
+     * SIMPLE HEURISTIC CLASSIFIER (you can replace with LLM later)
      */
-    @Tool(description = "Read the content of a URL and return it as text. Use this to read web pages for detailed information.")
-    public String readUrl(
-            @ToolParam(required = true, description = "The URL to fetch content from") String url) {
+    private String classify(String query) {
 
-        try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(15000);
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0 Research Agent");
+        String q = query.toLowerCase();
 
-            int responseCode = connection.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                return "Failed to fetch URL: HTTP " + responseCode;
-            }
-
-            String content = new BufferedReader(new InputStreamReader(connection.getInputStream()))
-                    .lines()
-                    .collect(Collectors.joining("\n"));
-
-            // Truncate very long content to fit within context window limits
-            if (content.length() > 8000) {
-                return content.substring(0, 8000);
-            }
-
-            return content;
-        } catch (Exception e) {
-            return "Error reading URL '" + url + "': " + e.getMessage();
+        if (q.contains("latest") || q.contains("news") || q.contains("today")) {
+            return "latest-information";
         }
+
+        if (q.contains("how") || q.contains("what") || q.contains("explain")) {
+            return "general-search";
+        }
+
+        return "search-fallback";
     }
 
+    /**
+     * TAVILY SEARCH
+     */
     private String searchViaTavily(String query) {
         try {
-            // Tavily Search API call
-            HttpURLConnection connection = (HttpURLConnection) new URL("https://api.tavily.com/search").openConnection();
-            connection.setRequestMethod("POST");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(30000);
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("Authorization", "Bearer " + System.getenv("TAVILY_API_KEY"));
-
-            String requestBody = "{\"query\": \"" + query.replace("\"", "\\\"") + "\", \"max_results\": 5}";
-
-            connection.setDoOutput(true);
-            connection.getOutputStream().write(requestBody.getBytes());
-
-            int responseCode = connection.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                return "Tavily API error: HTTP " + responseCode;
+            String apiKey = System.getenv("TAVILY_API_KEY");
+            if (apiKey == null) {
+                return "Tavily API key not configured";
             }
 
-            String result = new BufferedReader(new InputStreamReader(connection.getInputStream()))
-                    .lines()
-                    .collect(Collectors.joining("\n"));
+            HttpURLConnection conn = (HttpURLConnection)
+                    new URL("https://api.tavily.com/search").openConnection();
 
-            // Return raw Tavily JSON for the LLM to parse tool results from
-            return "TAVILY_RESULTS:" + result;
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setDoOutput(true);
+
+            String body = "{\"query\":\"" + query + "\",\"max_results\":5}";
+            conn.getOutputStream().write(body.getBytes());
+
+            // Tavily returns structured JSON — parse into formatted text for the LLM
+            return parseTavilyJson(read(conn));
+
         } catch (Exception e) {
-            return "Error searching via Tavily: " + e.getMessage();
+            return "Tavily error: " + e.getMessage();
         }
     }
 
-    private String searchViaHttp(String query) {
-        // Simple DuckDuckGo-lite approach using HTML scraping
+    /**
+     * SEARXNG (LOCAL MCP-FRIENDLY SEARCH ENGINE) — uses JSON format for structured results.
+     */
+    private String searchViaSearxng(String query) {
         try {
-            String encodedQuery = java.net.URLEncoder.encode(query, "UTF-8");
-            HttpURLConnection connection = (HttpURLConnection) new URL("https://html.duckduckgo.com/html/?q=" + encodedQuery).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(15000);
+            String encoded = URLEncoder.encode(query, "UTF-8");
 
-            String html = new BufferedReader(new InputStreamReader(connection.getInputStream()))
-                    .lines()
-                    .collect(Collectors.joining("\n"));
+            HttpURLConnection conn = (HttpURLConnection)
+                    new URL("http://localhost:9090/search?q=" + encoded + "&format=json").openConnection();
 
-            // Extract results from DDG HTML response (simplified parsing)
-            StringBuilder results = new StringBuilder();
-            int idx = 0;
-            while ((idx = html.indexOf("<a rel=\"nofollow\" class=\"result__a\"", idx)) != -1 && idx < html.length() - 40) {
-                idx += 38; // length of "<a rel=\"nofollow\" class=\"result__a\""
-                int linkEnd = html.indexOf(">", idx);
-                String linkText = html.substring(idx, Math.min(linkEnd + 50, html.length()));
+            conn.setRequestMethod("GET");
 
-                // Extract URL from href attribute
-                int hrefStart = html.indexOf("\"http", idx - 100);
-                if (hrefStart != -1) {
-                    int hrefEnd = html.indexOf("\"", hrefStart + 5);
-                    String url = html.substring(hrefStart, Math.min(hrefEnd + 50, html.length()));
+            String rawResponse = read(conn);
 
-                    // Extract snippet from <a class=\"result__snippet\">
-                    int snippetStart = html.indexOf("<a class=\"result__snippet\"", idx - 200);
-                    if (snippetStart != -1) {
-                        int snippetContentStart = html.indexOf(">", snippetStart + 30);
-                        int snippetEnd = html.indexOf("</", snippetContentStart + 1);
-                        String snippet = html.substring(snippetContentStart + 1, Math.min(snippetEnd, html.length()));
+            return parseSearXngJson(rawResponse);
 
-                        results.append("Title: ").append(linkText).append("\n");
-                        results.append("URL: ").append(url).append("\n");
-                        results.append("Description: ").append(snippet).append("\n---\n\n");
-                    }
-                }
+        } catch (Exception e) {
+            return "SearXNG error: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Parse SearXNG JSON response into structured text for the LLM.
+     */
+    private String parseSearXngJson(String rawResponse) {
+        if (rawResponse == null || rawResponse.isBlank()) {
+            return "No results from SearXNG";
+        }
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(rawResponse);
+
+            // SearXNG JSON format: top-level "results" array (or nested under "results")
+            JsonNode results = null;
+            if (root.has("results")) {
+                results = root.get("results");
+            } else if (root.isArray()) {
+                results = root;
             }
 
-            return results.length() > 0 ? results.toString() : "No search results found for: " + query;
+            if (results == null || !results.isArray() || results.isEmpty()) {
+                return "SearXNG returned no results";
+            }
+
+            List<String> lines = new ArrayList<>();
+            int idx = 0;
+            for (JsonNode result : results) {
+                String title = extractTitle(result);
+                String url = extractUrl(result);
+                String snippet = extractSnippet(result);
+
+                lines.add((idx + 1) + ". " + title);
+                if (url != null && !url.isBlank()) {
+                    lines.add("   URL: " + url);
+                }
+                if (snippet != null && !snippet.isBlank()) {
+                    lines.add("   Snippet: " + snippet);
+                }
+                idx++;
+            }
+
+            return String.join("\n", lines);
+
         } catch (Exception e) {
-            return "Error searching via DuckDuckGo: " + e.getMessage();
+            // Fall back to raw response — may still be useful for the LLM
+            return "SearXNG JSON parse failed, returning raw:\n" + rawResponse;
         }
+    }
+
+    private String extractTitle(JsonNode result) {
+        if (result.has("title")) {
+            return result.get("title").asText();
+        }
+        return "";
+    }
+
+    private String extractUrl(JsonNode result) {
+        if (result.has("url")) {
+            return result.get("url").asText();
+        }
+        // Try alternate field names used by SearXNG engines
+        if (result.has("link") || result.has("href")) {
+            return result.has("link") ? result.get("link").asText() : result.get("href").asText();
+        }
+        return "";
+    }
+
+    private String extractSnippet(JsonNode result) {
+        // SearXNG JSON format uses "content" for snippet, some engines use "excerpt" or "description"
+        if (result.has("content")) {
+            return result.get("content").asText();
+        }
+        if (result.has("snippet") || result.has("excerpt") || result.has("description")) {
+            String key = result.has("snippet") ? "snippet" : result.has("excerpt") ? "excerpt" : "description";
+            return result.get(key).asText();
+        }
+        return "";
+    }
+
+
+
+    /**
+     * Parse Tavily JSON response into structured text for the LLM.
+     */
+    private String parseTavilyJson(String rawResponse) {
+        if (rawResponse == null || rawResponse.isBlank()) {
+            return "No results from Tavily";
+        }
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(rawResponse);
+
+            // Tavily JSON format: top-level "results" array
+            JsonNode results = root.has("results") ? root.get("results") : null;
+            
+            if (results == null || !results.isArray() || results.isEmpty()) {
+                return "Tavily returned no results";
+            }
+
+            List<String> lines = new ArrayList<>();
+            int idx = 0;
+            for (JsonNode result : results) {
+                String title = extractTitle(result);
+                String url = extractUrl(result);
+                String snippet = extractSnippet(result);
+
+                lines.add((idx + 1) + ". " + title);
+                if (url != null && !url.isBlank()) {
+                    lines.add("   URL: " + url);
+                }
+                if (snippet != null && !snippet.isBlank()) {
+                    lines.add("   Snippet: " + snippet);
+                }
+                idx++;
+            }
+
+            return String.join("\n", lines);
+
+        } catch (Exception e) {
+            // Fall back to raw response — may still be useful for the LLM
+            return "Tavily JSON parse failed, returning raw:\n" + rawResponse;
+        }
+    }
+
+    /**
+     * COMMON HTTP READER — increased line limit to capture full search results.
+     */
+    private String read(HttpURLConnection conn) throws Exception {
+        return new BufferedReader(new InputStreamReader(conn.getInputStream()))
+                .lines()
+                .limit(1000)
+                .collect(Collectors.joining("\n"));
     }
 }
