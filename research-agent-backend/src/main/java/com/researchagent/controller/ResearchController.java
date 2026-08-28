@@ -176,7 +176,7 @@ public class ResearchController {
         dto.setTopic(session.getTopic());
         dto.setStatus(session.getStatus().name());
         dto.setPrompt(session.getPrompt());
-        dto.setFinalReport(session.getFinalReport());
+       // dto.setFinalReport(session.getFinalReport());
         dto.setCreatedAt(session.getCreatedAt());
         dto.setUpdatedAt(session.getUpdatedAt());
         dto.setCompletedAt(session.getCompletedAt());

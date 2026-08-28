@@ -68,5 +68,5 @@ spring.ai.sse.timeout: 600000
 # Abandoned session cleanup scheduler
 app:
   cleanup:
-    stale-after: PT1H   # PROCESSING sessions older than this are considered abandoned
+    stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
     interval: PT2M     # Scheduler runs every 30 minutes (fixed rate)

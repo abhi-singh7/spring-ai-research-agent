@@ -1,5 +1,6 @@
 package com.researchagent.model.dto;
 
+import lombok.Builder;
 import lombok.Data;
 
 import java.time.LocalDateTime;
