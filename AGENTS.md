@@ -32,6 +32,7 @@ npm start                     # proxy.conf.json forwards /api → localhost:8080
 - **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
 - **Angular Material M3 theming**: Use `mat.define-theme((color: ()))`. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — cannot be called at root level. See styles.scss.
 - **SSE streaming resilience**: Backend uses `Flux<String>` via `.stream().content()`; frontend detects connection loss with exponential backoff reconnection (3 attempts) and falls back to polling on failure. A 90-second stall timer forces completion detection if no chunks arrive during report generation.
+- **Iterative research + provenance**: Each sub-topic runs up to N LLM rounds (request `maxIterations`, else `app.research.default-max-iterations`: 3) — round 1 sweeps planned search queries, later rounds chase Open Questions. Early stop on coverage (≥3 captured source URLs AND ≥400 chars findings) or when a round adds no new URLs (round ≥2). References are built ONLY from "Title — URL" lines parsed out of research notes (deduped by normalized URL); the synthesis prompt forbids citing uncaptured URLs. Per-sub-topic failures become FAILED steps and continue; only total failure fails the session.
 - **Abandoned session cleanup**: Background scheduler (`@Scheduled`) marks PROCESSING sessions stuck >1 hour as CANCELLED every 30 minutes. Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
 - **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Changes require manual migration or disabling validate mode in dev. `hibernate.jdbc.lob.non_contextual_creation=true` is required to avoid PostgreSQL LOB API errors.
 
@@ -55,7 +56,8 @@ Local Java tools (WebSearchTool, UrlReaderTool) serve as fallback when MCP serve
 |------|---------|
 | `src/main/java/com/researchagent/config/ChatClientConfig.java` | ChatClient + MCP validation + tool router beans |
 | `src/main/resources/application.yml` | MCP connections, LLM model, datasource, SSE timeout (600s), cleanup scheduler config |
-| `src/main/java/com/researchagent/service/ResearchOrchestratorService.java` | Core: topic → sub-topics → tool calling → final report |
+| `src/main/java/com/researchagent/service/ResearchOrchestratorService.java` | Core pipeline (see below): breakdown w/ planned search queries → iterative rounds per sub-topic (retries, partial-failure tolerance) → streamed synthesis with References built from captured URLs |
+| `src/main/java/com/researchagent/service/LlmGateway.java`, `SpringAiLlmGateway.java` | LLM seam: `complete()`/`streamComplete()` with per-request temperature; production wraps the tools-configured ChatClient, tests mock the interface |
 | `src/main/java/com/researchagent/service/ResearchStreamingService.java` | SSE via `ConcurrentHashMap<UUID, SseEmitter>`, events: PROGRESS, CONTENT, REPORT_CHUNK, REPORT_DONE, STEP_COMPLETE, ERROR |
 | `src/main/java/com/researchagent/controller/ResearchController.java` | REST endpoints for research lifecycle + history + bulk delete |
 | `src/main/java/com/researchagent/tool/McpToolRouter.java` | Routes search tasks to MCP server chains with fallbacks |
