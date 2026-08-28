@@ -13,6 +13,7 @@ import reactor.core.publisher.Flux;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -50,7 +51,8 @@ class ResearchFlowQualityTest {
         session.setId(UUID.randomUUID()); // manually-constructed sessions have no generated id
         session.setTopic("test topic");
         session.setStatus(ResearchStatus.PROCESSING);
-        when(sessionRepo.findById(any(UUID.class))).thenReturn(java.util.Optional.of(session));
+        // processResearchAsync loads with the steps collection fetch-joined (async thread has no ambient session)
+        when(sessionRepo.findByIdWithSteps(any(UUID.class))).thenReturn(session);
     }
 
     // ---------- fixtures ----------
@@ -216,6 +218,17 @@ class ResearchFlowQualityTest {
         verify(llmGateway).streamComplete(anyString(), synthesisInput.capture(), any(Double.class));
         assertTrue(synthesisInput.getValue().contains("Early signal only"),
                 "round-1 findings must be carried into the report input");
+    }
+
+    @Test
+    void persistenceFailure_doesNotEscapeAsyncMethod_andEmitsError() {
+        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenReturn(breakdownJson(1));
+        org.mockito.Mockito.doThrow(new RuntimeException("db down")).when(sessionRepo).save(any()); // every save fails
+
+        assertDoesNotThrow(() -> service.processResearchAsync(session.getId(), request(1)));
+
+        assertEquals(ResearchStatus.FAILED, session.getStatus());
+        verify(streamService).sendError(eq(session.getId()), anyString());
     }
 
     @Test

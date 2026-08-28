@@ -14,7 +14,11 @@
 
 ## Verification
 - [x] Unit tests (`ResearchFlowQualityTest`, mocked at LlmGateway seam): happy path + References provenance, breakdown JSON retry, partial failure documents gaps, total failure → session FAILED, thin round triggers second round (exactly 3 calls), bare URLs become references — all green
-- [x] Full backend suite: `mvn test` = 103/103 pass
+- [x] Full backend suite: `mvn test` = 104/104 pass
+
+## Bugfix (post-review): LazyInitializationException on async thread
+- The @Async pool thread has no ambient Hibernate session/OSIV; mutating the lazy `steps` bag (`session.addStep`) threw. Fixed by loading via `findByIdWithSteps` (LEFT JOIN FETCH) so the bag is initialized up front — all later step mutations and incremental `repo.save()` merges run without any session.
+- Hardened error paths: catch block persistence wrapped in its own try/catch; streaming-completion callback failures handled on the Reactor thread with session.fail + ERROR event. Regression test: persistence failure does not escape the async method.
 
 ## Deferred / Follow-ups (not part of this change)
 - Per-source quality scoring/ranking for References ordering

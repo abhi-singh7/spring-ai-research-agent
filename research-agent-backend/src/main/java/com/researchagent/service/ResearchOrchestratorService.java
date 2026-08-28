@@ -170,14 +170,18 @@ public class ResearchOrchestratorService {
      */
     @Async("researchTaskExecutor")
     public void processResearchAsync(UUID sessionId, ResearchRequest request) {
-        // Fetch session from DB (it's persisted now)
-        ResearchSession session = sessionRepo.findById(sessionId).orElse(null);
-        if (session == null) {
-            log.error("Session {} not found for async processing", sessionId);
-            return;
-        }
-
+        ResearchSession session = null; // assigned inside the guarded block below
         try {
+            // Fetch session with steps FETCH-JOINed: this method runs on a pool thread (and later streaming
+            // callbacks run on Reactor threads), so there is NO ambient Hibernate session/OSIV. The lazy `steps`
+            // bag must be initialized up front; afterwards addStep()/save() operate on the in-memory collection
+            // and each save() opens its own short transaction.
+            session = sessionRepo.findByIdWithSteps(sessionId);
+            if (session == null) {
+                log.error("Session {} not found for async processing", sessionId);
+                return;
+            }
+
             int subTopicCount = request.getSubTopicCount() != null ? request.getSubTopicCount() : 5;
             int maxRounds = request.getMaxIterations() != null ? request.getMaxIterations() : defaultMaxIterations;
             if (maxRounds < 1) {
@@ -235,9 +239,15 @@ public class ResearchOrchestratorService {
 
         } catch (Exception e) {
             log.error("Error during research orchestration for session {}", sessionId, e);
-            session.fail(e.getMessage());
-            session.addStep(saveStep(session, 0, StepType.BREAKDOWN, "FAILED", null));
-            sessionRepo.save(session); // Cascade saves steps too
+            if (session != null) {
+                try {
+                    session.fail(e.getMessage());
+                    session.addStep(saveStep(session, 0, StepType.BREAKDOWN, "FAILED", null));
+                    sessionRepo.save(session); // Cascade saves steps too
+                } catch (Exception persistError) {
+                    log.error("Failed to persist failure state for session {}", sessionId, persistError);
+                }
+            }
             streamService.sendError(sessionId, "Research failed: " + e.getMessage());
         }
     }
@@ -502,16 +512,29 @@ public class ResearchOrchestratorService {
                             streamService.sendError(sessionId, "Failed to generate final report: " + error.getMessage());
                         },
                         () -> {
-                            // Report generation complete - update session status with full content
-                            String fullReport = reportBuffer.get().toString();
-                            session.setFinalReport(fullReport);
-                            session.complete();
-                            session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
-                            sessionRepo.save(session); // Cascade saves steps too
+                            // Report generation complete - update session status with full content.
+                            // This callback runs on a Reactor thread (no ambient Hibernate session): the steps
+                            // bag was fetch-joined up front and repo.save() opens its own short transaction.
+                            try {
+                                String fullReport = reportBuffer.get().toString();
+                                session.setFinalReport(fullReport);
+                                session.complete();
+                                session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
+                                sessionRepo.save(session); // Cascade saves steps too
 
-                            // Send final REPORT_DONE event with the complete report
-                            streamService.sendReportDone(sessionId, fullReport);
-                            streamService.sendProgress(sessionId, "Research complete!");
+                                // Send final REPORT_DONE event with the complete report
+                                streamService.sendReportDone(sessionId, fullReport);
+                                streamService.sendProgress(sessionId, "Research complete!");
+                            } catch (Exception callbackError) {
+                                log.error("Failed to finalize session {} after streaming", sessionId, callbackError);
+                                try {
+                                    session.fail("Failed to persist final report: " + callbackError.getMessage());
+                                    sessionRepo.save(session);
+                                } catch (Exception ignore) {
+                                    // nothing else we can do on this thread
+                                }
+                                streamService.sendError(sessionId, "Research failed to finalize: " + callbackError.getMessage());
+                            }
                         }
                 );
     }
