@@ -222,3 +222,13 @@ Represents an individual step in the research pipeline:
 ## Configuration Reference
 
 See [CONFIGURATION.md](./CONFIGURATION.md) for complete settings reference including environment variables, dependencies, MCP server configurations, and async execution details.
+
+---
+
+## Workspace Context
+
+This project is part of a larger AI projects workspace at the parent directory. For cross-project context:
+
+- **[Workspace README](../../README.md)** — Overview of all 5 projects and shared technology patterns
+- **[Workspace Architecture](../../WORKSPACE-ARCHITECTURE.md)** — Cross-project architectural analysis, including Research-Agent pipeline sequence diagrams
+- **[Workspace AGENTS Guide](../../WORKSPACE-AGENTS.md)** — AI agent guidance for navigating multiple projects in this workspace

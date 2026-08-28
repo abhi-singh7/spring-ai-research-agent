@@ -510,3 +510,13 @@ Several frontend features that were previously stubs are now fully implemented:
 2. **HistoryDetailComponent** — Fetches session from `/api/research/history/{sessionId}` endpoint with steps mapped to frontend format
 3. **SSE resilience** — Exponential backoff reconnection (max 3 attempts) + stall timer (90s) for report generation
 4. **Step name mapping** — Backend step types (BREAKDOWN, SUBTOPIC, SEARCH, READ, SYNTHESIS, FINAL_REPORT) are mapped to human-readable names via `getStepName()`
+
+---
+
+## Workspace Context
+
+This project is part of a larger AI projects workspace. For cross-project context:
+
+- **[Workspace README](../../../README.md)** — Overview of all 5 projects and shared technology patterns
+- **[Workspace Architecture](../../../WORKSPACE-ARCHITECTURE.md)** — Cross-project architectural analysis, including frontend pipeline diagrams
+- **[Workspace AGENTS Guide](../../../WORKSPACE-AGENTS.md)** — AI agent guidance for navigating multiple projects in this workspace
