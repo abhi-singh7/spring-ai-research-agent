@@ -20,6 +20,11 @@
 - The @Async pool thread has no ambient Hibernate session/OSIV; mutating the lazy `steps` bag (`session.addStep`) threw. Fixed by loading via `findByIdWithSteps` (LEFT JOIN FETCH) so the bag is initialized up front — all later step mutations and incremental `repo.save()` merges run without any session.
 - Hardened error paths: catch block persistence wrapped in its own try/catch; streaming-completion callback failures handled on the Reactor thread with session.fail + ERROR event. Regression test: persistence failure does not escape the async method.
 
+## Bugfix (post-review): duplicate key uq_session_order on incremental saves
+- Root cause: step ids are DB-generated (UUIDGenerator), so local child objects keep id=null after a merge. Every subsequent `repo.save(session)` re-cascaded those "new" children → re-insert of already-persisted steps → duplicate key `(session_id, order_index)`. Fix: **adopt the merged instance** returned by every save in the pipeline (`session = sessionRepo.save(session)`) so persisted children carry real ids on later merges.
+- Also fixed: catch-block error step now uses the next free index (was hardcoded 0 → collided with the persisted BREAKDOWN row); total-failure branch now persists FAILED status (previously lost silently).
+- New full-context integration test (`OrchestratorPersistenceIntegrationTest`): real Hibernate + H2 with production constraints, real @Async orchestrator, mocked LlmGateway. Verified to fail against the pre-fix service (session stuck PROCESSING) and pass post-fix.
+
 ## Deferred / Follow-ups (not part of this change)
 - Per-source quality scoring/ranking for References ordering
 - Persisting the aggregated source list on ResearchStep (currently in step content + report only)

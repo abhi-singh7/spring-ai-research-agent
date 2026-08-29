@@ -191,11 +191,14 @@ public class ResearchOrchestratorService {
             // --- Step 1: Break down topic into sub-topics, each with planned search queries ---
             PlanResult plan = planBreakdown(sessionId, request.getTopic(), subTopicCount);
 
-            // Save BREAKDOWN step and persist immediately so REST API returns real-time progress
+            // Save BREAKDOWN step and persist immediately so REST API returns real-time progress.
+            // NOTE: always adopt the merged instance returned by save(). Step ids are DB-generated, so our
+            // local child objects keep id=null after a merge; re-merging that stale graph later would make
+            // Hibernate re-insert already-persisted steps (duplicate key on uq_session_order).
             ResearchStep breakdownStep = saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", plan.record());
             session.addStep(breakdownStep);
             streamService.sendProgress(sessionId, "Topic broken down into " + plan.topics().size() + " sub-topics");
-            sessionRepo.save(session); // Persist BREAKDOWN step
+            session = sessionRepo.save(session); // Persist BREAKDOWN step
 
             log.info("Breakdown complete: {} sub-topics found for session {}", plan.topics().size(), sessionId);
 
@@ -222,13 +225,18 @@ public class ResearchOrchestratorService {
                     streamService.sendProgress(sessionId, "Research on '" + subTopic.getTitle() + "' failed after retries");
                     failedSubTopics.add(subTopic.getTitle());
                 }
-                sessionRepo.save(session); // Persist each SUBTOPIC step incrementally
+                session = sessionRepo.save(session); // Persist each SUBTOPIC step incrementally (adopt merged instance — see note above)
             }
 
             if (findingsBlocks.isEmpty()) {
                 String reason = "All sub-topic research attempts failed: " + String.join("; ", failedSubTopics);
                 log.error("Session {}: {}", sessionId, reason);
                 session.fail(reason);   // Total failure — nothing to synthesize
+                try {
+                    session = sessionRepo.save(session); // persist FAILED status (was silently lost before)
+                } catch (Exception persistError) {
+                    log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
+                }
                 streamService.sendError(sessionId, reason);
                 return;
             }
@@ -242,8 +250,9 @@ public class ResearchOrchestratorService {
             if (session != null) {
                 try {
                     session.fail(e.getMessage());
-                    session.addStep(saveStep(session, 0, StepType.BREAKDOWN, "FAILED", null));
-                    sessionRepo.save(session); // Cascade saves steps too
+                    // Next free order index — the BREAKDOWN step at index 0 is already persisted in most failure paths
+                    session.addStep(saveStep(session, session.getSteps().size(), StepType.BREAKDOWN, "FAILED", e.getMessage()));
+                    sessionRepo.save(session); // Cascade saves steps too (no further saves after this point)
                 } catch (Exception persistError) {
                     log.error("Failed to persist failure state for session {}", sessionId, persistError);
                 }
