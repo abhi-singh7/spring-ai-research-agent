@@ -17,15 +17,15 @@ class McpClientErrorHandlerTest {
     // ---------- getNextSearchFallback ----------
 
     @Test
-    void getNextSearchFallback_searxng_shouldReturnWebSearch() {
+    void getNextSearchFallback_searxng_shouldReturnOllamaWebSearch() {
         String fallback = handler.getNextSearchFallback("searxng");
-        assertThat(fallback).isEqualTo("web_search");
+        assertThat(fallback).isEqualTo("ollama_web_search");
     }
 
     @Test
-    void getNextSearchFallback_webSearch_shouldReturnNull() {
+    void getNextSearchFallback_ollamaWebSearch_shouldReturnNull() {
         // When: all search providers are down, fall back to local tools
-        String fallback = handler.getNextSearchFallback("web_search");
+        String fallback = handler.getNextSearchFallback("ollama_web_search");
         assertThat(fallback).isNull();
     }
 
@@ -46,8 +46,8 @@ class McpClientErrorHandlerTest {
     }
 
     @Test
-    void isMcpServerAvailable_webSearch_shouldNotThrow() {
-        boolean available = handler.isMcpServerAvailable("web_search");
+    void isMcpServerAvailable_ollamaWebSearch_shouldNotThrow() {
+        boolean available = handler.isMcpServerAvailable("ollama_web_search");
         assertThat(available).isNotNull();
     }
 
@@ -91,8 +91,8 @@ class McpClientErrorHandlerTest {
     }
 
     @Test
-    void onMcpServerStartupFailure_webSearch_shouldLogFallbackInfo() {
-        handler.onMcpServerStartupFailure("web_search", new RuntimeException("command not found"));
+    void onMcpServerStartupFailure_ollamaWebSearch_shouldLogFallbackInfo() {
+        handler.onMcpServerStartupFailure("ollama_web_search", new RuntimeException("command not found"));
     }
 
     @Test
@@ -106,7 +106,7 @@ class McpClientErrorHandlerTest {
     void getMcpServerStatusSummary_shouldReturnFormattedString() {
         String summary = handler.getMcpServerStatusSummary();
         assertThat(summary).contains("=== MCP Server Status ===");
-        assertThat(summary).contains("web_search:");
+        assertThat(summary).contains("ollama_web_search:");
         assertThat(summary).contains("searxng:");
         boolean hasAvailableOrUnavailable = summary.contains("AVAILABLE") || summary.contains("UNAVAILABLE");
         assertThat(hasAvailableOrUnavailable).isTrue();

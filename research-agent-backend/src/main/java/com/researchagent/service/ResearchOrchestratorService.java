@@ -18,8 +18,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -57,16 +59,19 @@ public class ResearchOrchestratorService {
     private final ResearchSessionRepository sessionRepo;
     private final ResearchStreamingService streamService;
     private final Executor researchTaskExecutor;
+    private final ResearchCancellationRegistry cancellationRegistry;
 
     public ResearchOrchestratorService(LlmGateway llmGateway, ObjectMapper objectMapper,
                                        ResearchSessionRepository sessionRepo,
                                        ResearchStreamingService streamService,
-                                       @org.springframework.beans.factory.annotation.Qualifier("researchTaskExecutor") Executor researchTaskExecutor) {
+                                       @org.springframework.beans.factory.annotation.Qualifier("researchTaskExecutor") Executor researchTaskExecutor,
+                                       ResearchCancellationRegistry cancellationRegistry) {
         this.llmGateway = llmGateway;
         this.objectMapper = objectMapper;
         this.sessionRepo = sessionRepo;
         this.streamService = streamService;
         this.researchTaskExecutor = researchTaskExecutor;
+        this.cancellationRegistry = cancellationRegistry;
     }
 
     /**
@@ -97,6 +102,8 @@ public class ResearchOrchestratorService {
                search snippets alone are not sufficient evidence.
             4. Pay attention to recency where it matters (note dates/versions) and to anything you could NOT verify
                or that conflicts across sources.
+            5. If a search returns "No results from any backend", do NOT retry that query or close variants — the tool
+               has already escalated through every available engine; continue with the information you have instead.
 
             Then write your research note in this EXACT format:
 
@@ -118,7 +125,8 @@ public class ResearchOrchestratorService {
 
             The research notes for the assigned sub-topic so far are provided in your message, including any open questions.
             Fill ONLY the gaps: run additional targeted searches and page reads that answer the open questions or verify
-            conflicting claims. Do not repeat findings already covered.
+            conflicting claims. Do not repeat findings already covered. If a search returns "No results from any
+            backend", do NOT retry that query — accept the gap and state it under Open Questions instead.
 
             Output only the NEW content, still using this EXACT format:
 
@@ -165,12 +173,22 @@ public class ResearchOrchestratorService {
      * URLs actually captured during page reads. Partial failures produce a report that documents gaps instead of
      * failing the whole session; only total failure fails the session.
      *
+     * <p>Cancellation is cooperative: this run registers a handle with {@link ResearchCancellationRegistry}, which is
+     * checked before every sub-topic round and LLM call attempt (an in-flight blocking HTTP call completes, but no
+     * further work starts), and holds the active report-stream subscription so it can be disposed mid-flight. Terminal-state
+     * writes are guarded by {@link #ownsSessionState(UUID)} so a cancelled run is never overwritten with COMPLETED/FAILED
+     * by late pipeline or stream callbacks.</p>
+     *
      * <p>Runs on {@code researchTaskExecutor} (Spring proxy) so the POST /api/research call returns immediately;
      * progress flows over SSE. Direct calls in unit tests run synchronously.</p>
      */
     @Async("researchTaskExecutor")
     public void processResearchAsync(UUID sessionId, ResearchRequest request) {
         ResearchSession session = null; // assigned inside the guarded block below
+
+        // Cooperative cancellation handle: stops all subsequent work once a user cancels.
+        ResearchCancellationRegistry.CancellationHandle handle = cancellationRegistry.register(sessionId);
+        boolean reportStreamStarted = false;
         try {
             // Fetch session with steps FETCH-JOINed: this method runs on a pool thread (and later streaming
             // callbacks run on Reactor threads), so there is NO ambient Hibernate session/OSIV. The lazy `steps`
@@ -182,6 +200,13 @@ public class ResearchOrchestratorService {
                 return;
             }
 
+            // Startup race guard: a cancel may have persisted before this pipeline thread even began. Aborting here
+            // keeps the run from doing LLM work and writing its stale PROCESSING row over CANCELLED.
+            if (!ownsSessionState(sessionId)) {
+                log.warn("Pipeline for {} starting but session is no longer PROCESSING — aborting without further work", sessionId);
+                return;
+            }
+
             int subTopicCount = request.getSubTopicCount() != null ? request.getSubTopicCount() : 5;
             int maxRounds = request.getMaxIterations() != null ? request.getMaxIterations() : defaultMaxIterations;
             if (maxRounds < 1) {
@@ -189,7 +214,7 @@ public class ResearchOrchestratorService {
             }
 
             // --- Step 1: Break down topic into sub-topics, each with planned search queries ---
-            PlanResult plan = planBreakdown(sessionId, request.getTopic(), subTopicCount);
+            PlanResult plan = planBreakdown(handle, sessionId, request.getTopic(), subTopicCount);
 
             // Save BREAKDOWN step and persist immediately so REST API returns real-time progress.
             // NOTE: always adopt the merged instance returned by save(). Step ids are DB-generated, so our
@@ -198,7 +223,7 @@ public class ResearchOrchestratorService {
             ResearchStep breakdownStep = saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", plan.record());
             session.addStep(breakdownStep);
             streamService.sendProgress(sessionId, "Topic broken down into " + plan.topics().size() + " sub-topics");
-            session = sessionRepo.save(session); // Persist BREAKDOWN step
+            session = persistChecked(handle, session); // Persist BREAKDOWN step (cancellation checkpoint inside)
 
             log.info("Breakdown complete: {} sub-topics found for session {}", plan.topics().size(), sessionId);
 
@@ -210,13 +235,16 @@ public class ResearchOrchestratorService {
             for (int i = 0; i < plan.topics().size(); i++) {
                 SubTopic subTopic = plan.topics().get(i);
                 try {
-                    ResearchRoundResult roundResult = researchOneSubTopic(sessionId, subTopic, maxRounds);
+                    handle.ensureActive(); // checkpoint before each sub-topic round batch
+                    ResearchRoundResult roundResult = researchOneSubTopic(handle, sessionId, subTopic, maxRounds);
                     findingsBlocks.add(buildFindingBlock(i + 1, subTopic.getTitle(), "COMPLETED", roundResult.note()));
                     aggregatedSources.putAll(roundResult.sourcesByUrl());
 
                     ResearchStep subtopicStep = saveStep(session, i + 1, StepType.SUBTOPIC, "COMPLETED", roundResult.note());
                     session.addStep(subtopicStep);
                     streamService.sendProgress(sessionId, "Completed research on: " + subTopic.getTitle());
+                } catch (ResearchCancelledException e) {
+                    throw e; // user cancellation is not a sub-topic failure — stop the whole run
                 } catch (Exception e) {
                     log.error("Sub-topic research failed for '{}' on session {} after retries: {}",
                             subTopic.getTitle(), sessionId, e.getMessage(), e);
@@ -225,29 +253,42 @@ public class ResearchOrchestratorService {
                     streamService.sendProgress(sessionId, "Research on '" + subTopic.getTitle() + "' failed after retries");
                     failedSubTopics.add(subTopic.getTitle());
                 }
-                session = sessionRepo.save(session); // Persist each SUBTOPIC step incrementally (adopt merged instance — see note above)
+                session = persistChecked(handle, session); // Persist each SUBTOPIC step incrementally (adopt merged instance — see note above)
             }
 
             if (findingsBlocks.isEmpty()) {
                 String reason = "All sub-topic research attempts failed: " + String.join("; ", failedSubTopics);
                 log.error("Session {}: {}", sessionId, reason);
-                session.fail(reason);   // Total failure — nothing to synthesize
-                try {
-                    session = sessionRepo.save(session); // persist FAILED status (was silently lost before)
-                } catch (Exception persistError) {
-                    log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
+                // Total failure — nothing to synthesize. Guarded: a cancelled/terminal run is not overwritten with FAILED.
+                if (ownsSessionState(sessionId)) {
+                    session.fail(reason);
+                    try {
+                        session = sessionRepo.save(session); // persist FAILED status (was silently lost before)
+                    } catch (Exception persistError) {
+                        log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
+                    }
+                } else {
+                    log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
                 }
                 streamService.sendError(sessionId, reason);
                 return;
             }
 
             // --- Step 3: Generate final report (streamed) with References built from captured sources ---
-            generateFinalReport(sessionId, session, request.getTopic(), plan.topics().size(),
+            handle.ensureActive(); // checkpoint before starting the long-running report stream
+            generateFinalReport(handle, sessionId, session, request.getTopic(), plan.topics().size(),
                     findingsBlocks, failedSubTopics, aggregatedSources.values());
+            // From here on the STREAM owns registry cleanup (its terminal callbacks unregister).
+            reportStreamStarted = true;
 
+        } catch (ResearchCancelledException e) {
+            log.info("Pipeline for session {} stopped due to user cancellation", sessionId);
+            // cancelResearch already persisted CANCELLED atomically. Re-assert in case an incremental save committed after
+            // the flag was set and reverted the status field back to PROCESSING (rare race).
+            reAssertCancellation(sessionId);
         } catch (Exception e) {
             log.error("Error during research orchestration for session {}", sessionId, e);
-            if (session != null) {
+            if (session != null && ownsSessionState(sessionId)) {
                 try {
                     session.fail(e.getMessage());
                     // Next free order index — the BREAKDOWN step at index 0 is already persisted in most failure paths
@@ -256,14 +297,21 @@ public class ResearchOrchestratorService {
                 } catch (Exception persistError) {
                     log.error("Failed to persist failure state for session {}", sessionId, persistError);
                 }
+            } else if (session != null) {
+                log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
             }
             streamService.sendError(sessionId, "Research failed: " + e.getMessage());
+        } finally {
+            // Release the registry entry unless the report stream has taken ownership of it.
+            if (!reportStreamStarted) {
+                cancellationRegistry.unregister(sessionId, handle);
+            }
         }
     }
 
     // ==================== STEP 1: BREAKDOWN PLANNING ====================
 
-    private PlanResult planBreakdown(UUID sessionId, String topic, int count) {
+    private PlanResult planBreakdown(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, String topic, int count) {
         String system = """
                 You are an expert research planner for a web-research agent.
 
@@ -280,7 +328,7 @@ public class ResearchOrchestratorService {
                 - Each element matches the schema: {"id": number, "title": string, "description": string, "searchQueries": [string]}
                 """.formatted(count, count);
 
-        String response = llmCallWithRetry(system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING);
+        String response = llmCallWithRetry(handle, system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING);
         List<SubTopic> topics = parseSubTopics(response);
 
         if (topics.isEmpty()) {
@@ -290,7 +338,7 @@ public class ResearchOrchestratorService {
             String correctiveUser = ("Your previous response could not be parsed as the required JSON array.\n"
                     + "Previous output:\n" + truncateForLog(response)
                     + "\n\nRespond AGAIN with ONLY the JSON array — no markdown fences, no explanations.");
-            response = llmCallWithRetry(system, correctiveUser, TEMP_PLANNING);
+            response = llmCallWithRetry(handle, system, correctiveUser, TEMP_PLANNING);
             topics = parseSubTopics(response);
         }
 
@@ -344,11 +392,13 @@ public class ResearchOrchestratorService {
 
     // ==================== STEP 2: ITERATIVE SUB-TOPIC RESEARCH ====================
 
-    private ResearchRoundResult researchOneSubTopic(UUID sessionId, SubTopic subTopic, int maxRounds) {
+    private ResearchRoundResult researchOneSubTopic(ResearchCancellationRegistry.CancellationHandle handle,
+                                                   UUID sessionId, SubTopic subTopic, int maxRounds) {
         StringBuilder note = new StringBuilder();
         LinkedHashMap<String, String> sourcesByUrl = new LinkedHashMap<>(); // normalized URL -> "Title — URL" line
 
         for (int round = 1; round <= maxRounds; round++) {
+            handle.ensureActive(); // checkpoint before each research round
             streamService.sendProgress(sessionId,
                     maxRounds > 1
                             ? "Researching: " + subTopic.getTitle() + " (round " + round + "/" + maxRounds + ")"
@@ -358,7 +408,7 @@ public class ResearchOrchestratorService {
             String user = buildRoundUserMessage(subTopic, note.toString(), sourcesByUrl);
 
             int urlsBefore = sourcesByUrl.size();
-            String response = llmCallWithRetry(system, user, TEMP_RESEARCH); // throws after final attempt
+            String response = llmCallWithRetry(handle, system, user, TEMP_RESEARCH); // throws after final attempt (or on cancel)
 
             if (note.length() > 0) {
                 note.append("\n\n").append(response.trim());
@@ -470,7 +520,7 @@ public class ResearchOrchestratorService {
 
     // ==================== STEP 3: FINAL REPORT STREAMING ====================
 
-    private void generateFinalReport(UUID sessionId, ResearchSession session, String topic, int totalSubTopics,
+    private void generateFinalReport(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, ResearchSession session, String topic, int totalSubTopics,
                                      List<String> findingsBlocks, List<String> failedSubTopics, Iterable<String> aggregatedSources) {
         StringBuilder input = new StringBuilder();
         input.append("Research Topic: ").append(topic).append("\n\n");
@@ -507,45 +557,68 @@ public class ResearchOrchestratorService {
 
         Flux<String> reportStream = llmGateway.streamComplete(SYNTHESIS_PROMPT, input.toString(), TEMP_SYNTHESIS);
 
-        // Stream the final report back to the frontend and accumulate content
-        reportStream
+        // Stream the final report back to the frontend and accumulate content. Terminal callbacks run later
+        // (on a Reactor thread) and are guarded by ownsSessionState(): if the user cancelled in between, we must
+        // not overwrite CANCELLED with COMPLETED/FAILED. Registry cleanup happens on every terminal path —
+        // doOnCancel covers the dispose path triggered by cancelResearch().
+        Disposable subscription = reportStream
                 .doOnNext(chunk -> {
                     streamService.sendReportChunk(sessionId, chunk);
                     reportBuffer.getAndUpdate(sb -> sb.append(chunk));  // Accumulate for saving after streaming completes
                 })
+                .doOnCancel(() -> cancellationRegistry.unregister(sessionId, handle))
                 .subscribe(
                         null,  // onNext already handled above via doOnNext
                         error -> {
-                            log.error("Error during report streaming", error);
-                            session.fail("Failed to generate final report: " + error.getMessage());
-                            streamService.sendError(sessionId, "Failed to generate final report: " + error.getMessage());
+                            try {
+                                log.error("Error during report streaming", error);
+                                if (ownsSessionState(sessionId)) {
+                                    session.fail("Failed to generate final report: " + error.getMessage());
+                                    streamService.sendError(sessionId, "Failed to generate final report: " + error.getMessage());
+                                } else {
+                                    log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
+                                }
+                            } finally {
+                                cancellationRegistry.unregister(sessionId, handle);
+                            }
                         },
                         () -> {
                             // Report generation complete - update session status with full content.
                             // This callback runs on a Reactor thread (no ambient Hibernate session): the steps
                             // bag was fetch-joined up front and repo.save() opens its own short transaction.
                             try {
-                                String fullReport = reportBuffer.get().toString();
-                                session.setFinalReport(fullReport);
-                                session.complete();
-                                session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
-                                sessionRepo.save(session); // Cascade saves steps too
+                                if (ownsSessionState(sessionId)) {
+                                    String fullReport = reportBuffer.get().toString();
+                                    session.setFinalReport(fullReport);
+                                    session.complete();
+                                    session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
+                                    sessionRepo.save(session); // Cascade saves steps too
 
-                                // Send final REPORT_DONE event with the complete report
-                                streamService.sendReportDone(sessionId, fullReport);
-                                streamService.sendProgress(sessionId, "Research complete!");
+                                    // Send final REPORT_DONE event with the complete report
+                                    streamService.sendReportDone(sessionId, fullReport);
+                                    streamService.sendProgress(sessionId, "Research complete!");
+                                } else {
+                                    log.info("Skipping COMPLETED write for session {} — run was cancelled or is already terminal", sessionId);
+                                }
                             } catch (Exception callbackError) {
                                 log.error("Failed to finalize session {} after streaming", sessionId, callbackError);
                                 try {
-                                    session.fail("Failed to persist final report: " + callbackError.getMessage());
-                                    sessionRepo.save(session);
+                                    if (ownsSessionState(sessionId)) {
+                                        session.fail("Failed to persist final report: " + callbackError.getMessage());
+                                        sessionRepo.save(session);
+                                    }
                                 } catch (Exception ignore) {
                                     // nothing else we can do on this thread
                                 }
                                 streamService.sendError(sessionId, "Research failed to finalize: " + callbackError.getMessage());
+                            } finally {
+                                cancellationRegistry.unregister(sessionId, handle);
                             }
                         }
                 );
+
+        // Expose the subscription to the registry so cancelResearch() can dispose it mid-stream.
+        handle.setActiveStream(subscription);
     }
 
     // ==================== LLM RETRIES & HELPERS ====================
@@ -554,9 +627,10 @@ public class ResearchOrchestratorService {
      * Run an LLM completion with bounded retries: 1 initial attempt + 2 retries with growing backoff.
      * Throws IllegalStateException once all attempts are exhausted so callers can decide how to degrade.
      */
-    private String llmCallWithRetry(String systemPrompt, String userMessage, Double temperature) {
+    private String llmCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, String systemPrompt, String userMessage, Double temperature) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
+            handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
             try {
                 return llmGateway.complete(systemPrompt, userMessage, temperature);
             } catch (RuntimeException e) {
@@ -600,12 +674,68 @@ public class ResearchOrchestratorService {
 
     /**
      * Cancel a running research session.
+     *
+     * <p>Coordinated three-part action:</p>
+     * <ol>
+     *   <li>Signal the in-flight pipeline — cooperative checkpoints stop any further sub-topic rounds / LLM calls,
+     *       and the active report-stream subscription (if streaming) is disposed, cancelling its upstream request.</li>
+     *   <li>Persist CANCELLED immediately with an atomic conditional UPDATE that only applies while the row is still
+     *       PROCESSING, so a run that has just completed/failed is never clobbered.</li>
+     *   <li>Emit the progress SSE event so connected clients see the cancelled state (also picked up by polling).</li>
+     * </ol>
      */
     public void cancelResearch(UUID sessionId) {
-        ResearchSession session = sessionRepo.findByIdWithSteps(sessionId);
-        if (session != null && "PROCESSING".equals(session.getStatus().name())) {
-            session.fail("Cancelled by user");
-            streamService.sendProgress(sessionId, "Research cancelled by user");
+        ResearchSession session = sessionRepo.findById(sessionId).orElse(null);
+        if (session == null || !"PROCESSING".equals(session.getStatus().name())) {
+            return; // not running — the controller enforces 400 for these cases anyway
+        }
+
+        boolean signalled = cancellationRegistry.cancel(sessionId);   // flag + dispose active stream
+        int updated = sessionRepo.markCancelledIfProcessing(sessionId, LocalDateTime.now(), "Cancelled by user");
+
+        if (!signalled) {
+            log.warn("Cancel requested for {} but no in-flight pipeline handle found — status persisted only", sessionId);
+        } else if (updated == 0) {
+            log.info("Cancel lost the terminal-state race for session {}; DB state left as-is", sessionId);
+        }
+
+        streamService.sendProgress(sessionId, "Research cancelled by user");
+    }
+
+    /**
+     * Incremental persist during a run — checks the cancellation flag first so a cancelled run never writes its stale
+     * PROCESSING row over CANCELLED (an in-flight save would otherwise revert the status field via merge semantics).
+     */
+    private ResearchSession persistChecked(ResearchCancellationRegistry.CancellationHandle handle, ResearchSession session) {
+        handle.ensureActive(); // throws ResearchCancelledException if a user cancelled
+        return sessionRepo.save(session);
+    }
+
+    /**
+     * True only while this run still owns the session's terminal state: not cancelled by the user AND the DB row is
+     * still PROCESSING. Used to guard every late (pipeline or stream-thread) write of COMPLETED/FAILED.
+     */
+    private boolean ownsSessionState(UUID sessionId) {
+        if (cancellationRegistry.isCancelled(sessionId)) {
+            return false;
+        }
+        ResearchSession current = sessionRepo.findById(sessionId).orElse(null);
+        return current != null && "PROCESSING".equals(current.getStatus().name());
+    }
+
+    /**
+     * Re-assert CANCELLED after the pipeline stopped on a cancel signal — repairs the rare race where an incremental save
+     * committed AFTER the flag was set and reverted the status to PROCESSING. The conditional UPDATE can never touch a run
+     * that has genuinely reached a terminal state.
+     */
+    private void reAssertCancellation(UUID sessionId) {
+        try {
+            int updated = sessionRepo.markCancelledIfProcessing(sessionId, LocalDateTime.now(), "Cancelled by user");
+            if (updated == 0) {
+                log.debug("Re-assert cancel for {} was a no-op — status already terminal", sessionId);
+            }
+        } catch (Exception e) {
+            log.error("Failed to re-assert cancellation state for session {}", sessionId, e);
         }
     }
 

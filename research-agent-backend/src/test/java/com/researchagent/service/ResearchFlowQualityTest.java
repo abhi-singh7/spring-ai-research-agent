@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 
+import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -19,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -34,6 +37,7 @@ class ResearchFlowQualityTest {
     private LlmGateway llmGateway;
     private ResearchSessionRepository sessionRepo;
     private ResearchStreamingService streamService;
+    private ResearchCancellationRegistry cancellationRegistry;
     private ResearchOrchestratorService service;
     private ResearchSession session;
 
@@ -44,8 +48,9 @@ class ResearchFlowQualityTest {
         streamService = mock(ResearchStreamingService.class);
         when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
 
+        cancellationRegistry = new ResearchCancellationRegistry(); // the real registry — tests drive actual cancellations
         service = new ResearchOrchestratorService(llmGateway, new ObjectMapper(), sessionRepo,
-                streamService, (Runnable r) -> { /* unused by processResearchAsync */ });
+                streamService, (Runnable r) -> { /* unused by processResearchAsync */ }, cancellationRegistry);
 
         session = new ResearchSession();
         session.setId(UUID.randomUUID()); // manually-constructed sessions have no generated id
@@ -53,6 +58,8 @@ class ResearchFlowQualityTest {
         session.setStatus(ResearchStatus.PROCESSING);
         // processResearchAsync loads with the steps collection fetch-joined (async thread has no ambient session)
         when(sessionRepo.findByIdWithSteps(any(UUID.class))).thenReturn(session);
+        // Terminal-state guards read the row via findById — point it at the same in-memory entity.
+        when(sessionRepo.findById(any(UUID.class))).thenAnswer(inv -> Optional.ofNullable(session));
     }
 
     // ---------- fixtures ----------
@@ -259,5 +266,62 @@ class ResearchFlowQualityTest {
         assertTrue(refs.contains("https://one.io/a"));
         assertTrue(refs.contains("https://two.io/b"));
         assertTrue(refs.contains("https://three.edu/c"));
+    }
+
+    // ---------- cancellation behavior ----------
+
+    @Test
+    void cancelDuringResearch_stopsPipeline_andPersistsCancelledAtomically() {
+        AtomicInteger callNo = new AtomicInteger();
+        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
+            int n = callNo.incrementAndGet();
+            if (n == 1) {
+                return breakdownJson(2);
+            }
+            // User cancels while the first research round is in flight.
+            service.cancelResearch(session.getId());
+            return coveredNote();
+        });
+
+        service.processResearchAsync(session.getId(), request(3));
+
+        // The run stops at the next checkpoint: no report generation, and no COMPLETED/FAILED overwrite of the entity —
+        // CANCELLED lives in the persisted row via conditional update (called by cancel + re-asserted on abort).
+        assertEquals(ResearchStatus.PROCESSING, session.getStatus());
+        verify(llmGateway, never()).streamComplete(anyString(), anyString(), any(Double.class));
+        verify(sessionRepo, atLeastOnce())
+                .markCancelledIfProcessing(eq(session.getId()), any(LocalDateTime.class), eq("Cancelled by user"));
+    }
+
+    @Test
+    void cancelDuringReportStream_disposesSubscription_andSkipsCompletedWrite() {
+        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenReturn(breakdownJson(1), coveredNote());
+        AtomicInteger cancellations = new AtomicInteger();
+        // A report stream that never completes — like a long synthesis still in flight.
+        Flux<String> stuckStream = Flux.create(sink -> sink.onCancel(cancellations::incrementAndGet));
+        when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
+                .thenReturn(stuckStream);
+
+        service.processResearchAsync(session.getId(), request(1)); // returns while the stream is still active
+
+        assertEquals(0, cancellations.get());                       // nothing cancelled yet — but a handle exists
+        verify(streamService, never()).sendReportDone(eq(session.getId()), anyString());
+
+        service.cancelResearch(session.getId());                     // dispose must propagate to the upstream
+
+        assertEquals(1, cancellations.get());
+        assertEquals(ResearchStatus.PROCESSING, session.getStatus()); // no COMPLETED overwrite after cancellation
+        verify(streamService, never()).sendReportDone(eq(session.getId()), anyString());
+    }
+
+    @Test
+    void pipelineStartsAfterCancel_abortsBeforeAnyLlmWork() {
+        // A cancel persisted before this async pipeline thread even began (startup race).
+        session.setStatus(ResearchStatus.CANCELLED);
+
+        service.processResearchAsync(session.getId(), request(3));
+
+        verify(llmGateway, never()).complete(anyString(), anyString(), any(Double.class));
+        verify(streamService, never()).sendProgress(eq(session.getId()), anyString());
     }
 }

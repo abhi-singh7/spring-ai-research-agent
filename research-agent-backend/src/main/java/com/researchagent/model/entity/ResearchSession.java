@@ -70,19 +70,32 @@ public class ResearchSession {
     }
 
     /**
-     * Mark the session as completed with a timestamp.
+     * Mark the session as completed with a timestamp. No-op if already in a terminal state —
+     * late callbacks must never overwrite CANCELLED/FAILED runs.
      */
     public void complete() {
+        if (isTerminal()) {
+            return;
+        }
         this.status = ResearchStatus.COMPLETED;
         this.completedAt = LocalDateTime.now();
     }
 
     /**
-     * Mark the session as failed with an error message.
+     * Mark the session as failed with an error message. No-op if already in a terminal state.
      */
     public void fail(String errorMessage) {
+        if (isTerminal()) {
+            return;
+        }
         this.status = ResearchStatus.FAILED;
         this.finalReport = "Failed: " + errorMessage;
         this.completedAt = LocalDateTime.now();
+    }
+
+    private boolean isTerminal() {
+        return status == ResearchStatus.COMPLETED
+                || status == ResearchStatus.FAILED
+                || status == ResearchStatus.CANCELLED;
     }
 }

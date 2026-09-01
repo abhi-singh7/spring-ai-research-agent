@@ -79,7 +79,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
 
         <!-- Cancel button — only show when research is actively processing -->
         @if (researchSession()?.status === 'PROCESSING') {
-          <button mat-raised-button color="warn" class="cancel-btn" [@fadeIn]>
+          <button mat-raised-button color="warn" class="cancel-btn" [@fadeIn] (click)="onCancel()">
             Cancel Research
           </button>
         }
@@ -106,6 +106,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .completed { background-color: #e8f5e9; color: #2e7d32; }
     .failed { background-color: #ffebee; color: #c62828; }
     .pending { background-color: #fafafa; color: #424242; border: 1px solid #bdbdbd; }
+    .cancelled { background-color: #eceff1; color: #546e7a; border: 1px solid #b0bec5; }
 
     /* Dark mode status chip colors */
     @media (prefers-color-scheme: dark) {
@@ -114,6 +115,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
       .completed { background-color: rgba(102, 187, 106, 0.2); color: #66bb6a; box-shadow: 0 0 10px rgba(102, 187, 106, 0.15); }
       .failed { background-color: rgba(239, 83, 80, 0.2); color: #ef5350; box-shadow: 0 0 10px rgba(239, 83, 80, 0.15); }
       .pending { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
+      .cancelled { background-color: rgba(176, 190, 197, 0.2); color: #b0bec5; border: 1px solid #616161; }
     }
 
     /* Animated progress bar */
@@ -210,8 +212,14 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
   }
 
   private loadSession(): void {
-    this.researchService.getHistoricalSession(this.sessionId).subscribe({
+    // Clear the shared session state before fetching so this page never renders another
+    // session's stale data while its own request is in flight.
+    this.researchService.researchSession.set(null);
+    const requestedId = this.sessionId;
+    this.researchService.getHistoricalSession(requestedId).subscribe({
       next: (session) => {
+        // Ignore stale responses if the user has since navigated to a different session
+        if (requestedId !== this.sessionId) return;
         // Convert backend steps to frontend format and sync into signal
         const newSteps = (session as any)?.steps?.map((step: any, i: number) => ({
           stepNumber: step.orderIndex + 1,

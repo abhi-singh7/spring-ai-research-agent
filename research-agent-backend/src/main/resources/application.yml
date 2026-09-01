@@ -6,7 +6,7 @@ spring:
       base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
       chat:
         options:
-          model: ${LLM_MODEL:gemma-4-26b-a4b-it-qat }
+          model: ${LLM_MODEL:google/gemma-4-26b-a4b-qat}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
     mcp:
@@ -17,7 +17,8 @@ spring:
           enabled: true
         stdio:
           connections:
-            web_search:
+            # Ollama's hosted web search — 3rd fallback in the McpToolRouter chain (searxng → ddg → ollama_web_search → tavily).
+            ollama_web_search:
               command: uv
               args:
                 - run
@@ -31,15 +32,17 @@ spring:
                 - mcp-searxng
               env:
                 SEARXNG_URL: http://localhost:9090
-            excalidraw:
-              command: node
-              args:
-                - /home/abhi/excalidraw-mcp/dist/index.js
-                - "--stdio"
+            # [browser] extra installs curl_cffi (Chrome TLS impersonation) — DuckDuckGo's bot detection
+            # blocks plain httpx clients with empty HTTP 202 pages; search/fetch then auto-fallback to the
+            # impersonated backend. See https://github.com/nickclyde/duckduckgo-mcp-server (Backends section).
             ddg_search:
               command: uvx
               args:
+                - "--with"
+                - "duckduckgo-mcp-server[browser]"
                 - duckduckgo-mcp-server
+                - --fetch-backend
+                - auto
 
 # DataSource configuration for PostgreSQL
 spring.datasource.url: jdbc:postgresql://localhost:5432/research-agent
@@ -71,4 +74,8 @@ app:
     default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
   cleanup:
     stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
-    interval: PT2M     # Scheduler runs every 30 minutes (fixed rate)
+    interval: PT20M     # Scheduler runs every 20 minutes (fixed rate)
+  search:
+    ollama-base-url: https://ollama.com   # hosted API used by WebSearchTool's third fallback backend
+    ollama-api-key: ${OLLAMA_API_KEY:}    # Bearer token; empty → the ollama backend reports "not configured" instead of calling out
+    tavily-api-key: ${TAVILY_API_KEY:}    # Bearer token for Tavily Search API (final fallback); empty → the tavily backend reports "not configured" instead of calling out

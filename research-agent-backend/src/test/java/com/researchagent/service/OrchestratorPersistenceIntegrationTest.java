@@ -3,6 +3,7 @@ package com.researchagent.service;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
+import com.researchagent.model.enums.StepType;
 import com.researchagent.repository.ResearchSessionRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +12,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -103,5 +105,51 @@ class OrchestratorPersistenceIntegrationTest {
         assertEquals(List.of(0, 1, 2, 3), orderIndexes, "order indexes must be sequential and unique");
         assertNotNull(finished.getFinalReport());
         assertTrue(finished.getFinalReport().contains("Final Report"));
+    }
+
+    /**
+     * Cancelling a running pipeline must persist CANCELLED atomically (the conditional UPDATE, which also proves the
+     * native query binds UUID parameters correctly) and stop all further work — no report generation after cancel.
+     */
+    @Test
+    void cancelMidPipeline_persistsCancelledAtomically_andStopsRun() throws InterruptedException {
+        ResearchSession session = new ResearchSession();
+        session.setTopic("Cancel mid-pipeline check");
+        session.setStatus(ResearchStatus.PROCESSING);
+        sessionRepo.save(session);
+        UUID sessionId = session.getId();
+
+        AtomicInteger researchCalls = new AtomicInteger();
+        when(llmGateway.complete(anyString(), anyString(), eq(0.3))).thenReturn(BREAKDOWN_JSON);
+        when(llmGateway.complete(anyString(), anyString(), eq(0.7))).thenAnswer(inv -> {
+            if (researchCalls.incrementAndGet() == 1) {
+                // User cancels while the first research LLM call is in flight.
+                orchestrator.cancelResearch(sessionId);
+            }
+            return RESEARCH_NOTES;
+        });
+
+        ResearchRequest request = new ResearchRequest();
+        request.setTopic("Cancel mid-pipeline check");
+        request.setSubTopicCount(2);
+        request.setMaxIterations(1);
+        orchestrator.processResearchAsync(sessionId, request);
+
+        // Poll until the run settles (cancellation lands fast — no report generation after it).
+        ResearchStatus status = ResearchStatus.PROCESSING;
+        long deadline = System.currentTimeMillis() + 60_000;
+        while ((status == ResearchStatus.PROCESSING || status == ResearchStatus.PENDING) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(250);
+            status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
+        }
+
+        assertEquals(ResearchStatus.CANCELLED, status, "cancelling a running pipeline must persist CANCELLED");
+        ResearchSession cancelled = sessionRepo.findByIdWithSteps(sessionId);
+        assertEquals("Cancelled by user", cancelled.getFinalReport());
+        // Only the BREAKDOWN step was persisted before the cancel; no sub-topic or report work followed.
+        assertTrue(cancelled.getSteps().stream()
+                .anyMatch(s -> s.getOrderIndex() == 0 && s.getType() == StepType.BREAKDOWN));
+        assertEquals(1, cancelled.getSteps().size(), "no steps may be written after the cancel signal: " +
+                cancelled.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
     }
 }
