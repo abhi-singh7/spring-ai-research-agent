@@ -10,15 +10,14 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Proves the search tool executes the routed fallback chain IN ONE CALL: SearXNG first, DuckDuckGo as an
- * independent escalation target, Ollama Web Search (hosted API) third, Tavily (hosted search API) as the
- * final one — and that a decisive "all backends exhausted" verdict is returned (so the LLM never retries the
- * same dead search method in a loop).
+ * Proves the search tool executes the routed fallback chain IN ONE CALL: Firecrawl first (self-hosted
+ * API), DuckDuckGo as an independent escalation target, Ollama Web Search (hosted API) third, Tavily
+ * (hosted search API) as the final one — and that a decisive "all backends exhausted" verdict is returned
+ * (so the LLM never retries the same dead search method in a loop).
  */
 class WebSearchToolTest {
 
@@ -54,11 +53,18 @@ class WebSearchToolTest {
         @Override public void close() { server.stop(0); }
     }
 
-    private StubServer searxng;
+    private StubServer firecrawl;
     private StubServer ddg;
     private StubServer ollama;
     private StubServer tavily;
     private WebSearchTool tool;
+
+    /** Firecrawl v2/search success payload: {"success":true,"data":{"web":[{url,title,description}]}} */
+    private static final String FIRECRAWL_JSON = """
+            {"success":true,"data":{"web":[
+              {"url":"https://a.example/1","title":"FC Title","description":"FC snippet"},
+              {"url":"https://a.example/2","title":"FC Two","description":"Second"}
+            ]}}""";
 
     private static final String DDG_HTML = """
             <html><body>
@@ -85,45 +91,41 @@ class WebSearchToolTest {
 
     @BeforeEach
     void setUp() throws IOException {
-        searxng = new StubServer("/search");
+        firecrawl = new StubServer("/v2/search");
         ddg = new StubServer("/html/");
         ollama = new StubServer("/api/web_search");
         tavily = new StubServer("/search");
-        searxng.start();
+        firecrawl.start();
         ddg.start();
         ollama.start();
         tavily.start();
-        tool = new WebSearchTool(new McpToolRouter(), searxng.baseUrl(), ddg.baseUrl(),
+        tool = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
                 ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "tavily-test-key");
     }
 
     @AfterEach
     void tearDown() throws IOException {
-        searxng.close();
+        firecrawl.close();
         ddg.close();
         ollama.close();
         tavily.close();
     }
 
     @Test
-    void searxngHasResults_returnsSearxngAndSkipsDuckDuckGo() {
-        searxng.body = """
-                {"results":[
-                  {"title":"SE Title","url":"https://a.example/1","content":"SE snippet"},
-                  {"title":"SE Two","link":"https://a.example/2","excerpt":"Second"}
-                ]}""";
+    void firecrawlHasResults_returnsFirecrawlAndSkipsDuckDuckGo() {
+        firecrawl.body = FIRECRAWL_JSON;
 
         String result = tool.search("how does X work", "general-search");
 
-        assertThat(result).contains("SE Title").contains("https://a.example/1").contains("SE snippet");
-        assertThat(searxng.hits.get()).isOne();
+        assertThat(result).contains("FC Title").contains("https://a.example/1").contains("FC snippet");
+        assertThat(firecrawl.hits.get()).isOne();
         // Escalation target must NOT be touched when the preferred engine already succeeded.
         assertThat(ddg.hits.get()).isZero();
     }
 
     @Test
-    void searxngEmpty_escalatesToDuckDuckGo_inSameCall() {
-        searxng.body = "{\"results\":[]}";
+    void firecrawlEmpty_escalatesToDuckDuckGo_inSameCall() {
+        firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 200;
         ddg.body = DDG_HTML;
 
@@ -135,13 +137,27 @@ class WebSearchToolTest {
                 .contains("An overview of the topic.");      // snippet tag-stripped
 
         // ...and both backends were actually consulted in this single call.
-        assertThat(searxng.hits.get()).isOne();
+        assertThat(firecrawl.hits.get()).isOne();
+        assertThat(ddg.hits.get()).isOne();
+    }
+
+    @Test
+    void firecrawlReportsFailure_escalatesToDuckDuckGo_inSameCall() {
+        // success:false with an error message — the chain must treat it as a backend failure.
+        firecrawl.body = "{\"success\":false,\"error\":\"rate limited\"}";
+        ddg.status = 200;
+        ddg.body = DDG_HTML;
+
+        String result = tool.search("what is Z", null);
+
+        assertThat(result).contains("Duck Duck Guide");
+        assertThat(firecrawl.hits.get()).isOne();
         assertThat(ddg.hits.get()).isOne();
     }
 
     @Test
     void allBackendsFail_returnsDecisiveExhaustionVerdict() {
-        searxng.status = 500;
+        firecrawl.status = 500;
         ddg.status = 403;
         ddg.body = "blocked";
 
@@ -152,14 +168,14 @@ class WebSearchToolTest {
 
         assertThat(result).startsWith("No results from any search backend");
         // Per-backend reasons make the failure diagnostic (and signal: nothing to retry against).
-        assertThat(result).contains("searxng").contains("ddg").contains("ollama_web_search").contains("tavily");
+        assertThat(result).contains("firecrawl").contains("ddg").contains("ollama_web_search").contains("tavily");
         // Explicit anti-retry instruction so the LLM stops hammering search.
         assertThat(result).contains("Do NOT retry this query");
     }
 
     @Test
-    void searxngEmpty_ddgBlocked_escalatesToOllama_inSameCall() {
-        searxng.body = "{\"results\":[]}";
+    void firecrawlEmpty_ddgBlocked_escalatesToOllama_inSameCall() {
+        firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 403;   // rate-limited / bot-blocked — the exact trigger for escalation
         ollama.body = OLLAMA_JSON;
 
@@ -171,7 +187,7 @@ class WebSearchToolTest {
                 .contains("From the hosted API");         // content field mapped to snippet line
 
         // ...and all three backends were actually consulted in this single call.
-        assertThat(searxng.hits.get()).isOne();
+        assertThat(firecrawl.hits.get()).isOne();
         assertThat(ddg.hits.get()).isOne();
         assertThat(ollama.hits.get()).isOne();
         // Escalation stops at the first successful backend — Tavily must never be touched here.
@@ -179,8 +195,8 @@ class WebSearchToolTest {
     }
 
     @Test
-    void searxngEmpty_ddgBlocked_ollamaFails_escalatesToTavily_inSameCall() {
-        searxng.body = "{\"results\":[]}";
+    void firecrawlEmpty_ddgBlocked_ollamaFails_escalatesToTavily_inSameCall() {
+        firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 403;   // rate-limited / bot-blocked
         ollama.status = 500;
         tavily.body = TAVILY_JSON;
@@ -193,7 +209,7 @@ class WebSearchToolTest {
                 .contains("From the Tavily API");         // content field mapped to snippet line
 
         // ...and all four backends were actually consulted in this single call.
-        assertThat(searxng.hits.get()).isOne();
+        assertThat(firecrawl.hits.get()).isOne();
         assertThat(ddg.hits.get()).isOne();
         assertThat(ollama.hits.get()).isOne();
         assertThat(tavily.hits.get()).isOne();
@@ -201,9 +217,9 @@ class WebSearchToolTest {
 
     @Test
     void ollamaApiKeyMissing_backendReportsNotConfiguredWithoutCallingOut() {
-        WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), searxng.baseUrl(), ddg.baseUrl(),
+        WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
                 ollama.baseUrl(), "   ", tavily.baseUrl(), "tavily-test-key");
-        searxng.body = "{\"results\":[]}";
+        firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 200; // empty page → no results
         ddg.body = "<html><body>nothing</body></html>";
 
@@ -217,9 +233,9 @@ class WebSearchToolTest {
 
     @Test
     void tavilyApiKeyMissing_backendReportsNotConfiguredWithoutCallingOut() {
-        WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), searxng.baseUrl(), ddg.baseUrl(),
+        WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
                 ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "   ");
-        searxng.body = "{\"results\":[]}";
+        firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 403; // blocked — escalation continues
         ollama.status = 500;
 
@@ -232,15 +248,15 @@ class WebSearchToolTest {
     }
 
     @Test
-    void searxngDown_ddgWorks_stillSucceedsWithIndependentEngine() {
-        // Simulate a dead SearXNG process: connection refused (nothing listening on that port).
-        WebSearchTool toolWithDeadSearxng = new WebSearchTool(
+    void firecrawlDown_ddgWorks_stillSucceedsWithIndependentEngine() {
+        // Simulate a dead Firecrawl process: connection refused (nothing listening on that port).
+        WebSearchTool toolWithDeadFirecrawl = new WebSearchTool(
                 new McpToolRouter(), "http://127.0.0.1:1", ddg.baseUrl(), ollama.baseUrl(), "test-api-key",
                 tavily.baseUrl(), "tavily-test-key");
         ddg.body = DDG_HTML;
-        searxng.close();
+        firecrawl.close();
 
-        String result = toolWithDeadSearxng.search("what is Z", null);
+        String result = toolWithDeadFirecrawl.search("what is Z", null);
 
         assertThat(result).contains("Duck Duck Guide");
         assertThat(ddg.hits.get()).isOne();

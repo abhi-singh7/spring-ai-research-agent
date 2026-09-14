@@ -58,32 +58,37 @@ spring.ai.mcp.client.type: SYNC
 spring.ai.mcp.client.tool-name-prefix: "mcp-"
 spring.ai.mcp.client.toolcallback.enabled: true
 spring.ai.mcp.client.stdio.connections:
-  web_search:
+  ollama_web_search:
     command: uv
     args: ["run", "/home/abhi/ollama_web_search.py"]
     env: { OLLAMA_API_KEY: ${OLLAMA_API_KEY} }
-  searxng:
-    command: npx
-    args: ["-y", "mcp-searxng"]
-    env: { SEARXNG_URL: http://localhost:9090 }
-  excalidraw:
-    command: node
-    args: ["/home/abhi/excalidraw-mcp/dist/index.js", "--stdio"]
   ddg_search:
     command: uvx
-    args: ["duckduckgo-mcp-server"]
+    args: ["--with", "duckduckgo-mcp-server[browser]", "duckduckgo-mcp-server", "--fetch-backend", "auto"]
 ```
 
-Four stdio-based MCP servers are auto-configured by Spring AI's `spring-ai-starter-mcp-client-webflux` dependency. Each server exposes tools (like `search`, `readUrl`) that the LLM can call during research. The tool-name prefix `mcp-` avoids naming conflicts with local Java tools (`WebSearchTool`, `UrlReaderTool`).
+Two stdio-based MCP servers are auto-configured by Spring AI's `spring-ai-starter-mcp-client-webflux` dependency. Each server exposes tools that the LLM can call during research. The tool-name prefix `mcp-` avoids naming conflicts with local Java tools (`WebSearchTool`, `UrlReaderTool`).
 
 | Server | Command | Purpose |
 |--------|---------|---------|
-| `web_search` | `uv run /home/abhi/ollama_web_search.py` | Web search via Ollama-powered search API (requires OLLAMA_API_KEY) |
-| `searxng` | `npx -y mcp-searxng` | SearXNG meta-search engine (requires SEARXNG_URL at localhost:9090) |
-| `excalidraw` | `node /home/abhi/excalidraw-mcp/dist/index.js --stdio` | Diagram generation via Excalidraw MCP |
-| `ddg_search` | `uvx duckduckgo-mcp-server` | DuckDuckGo fallback search |
+| `ollama_web_search` | `uv run /home/abhi/ollama_web_search.py` | Web search via Ollama's hosted search API (requires OLLAMA_API_KEY) |
+| `ddg_search` | `uvx duckduckgo-mcp-server[browser]` | DuckDuckGo fallback search (browser extra adds Chrome TLS impersonation) |
 
-Local Java tools (`WebSearchTool`, `UrlReaderTool`) serve as fallback when MCP servers are unavailable. The `McpToolRouter` component determines task-type routing for MCP tools.
+#### Search Backend Configuration (plain HTTP — not MCP)
+
+The preferred search/scrape backends are called directly over HTTP by the local Java tools, configured under `app.search`:
+
+```yaml
+app:
+  search:
+    firecrawl-base-url: ${FIRECRAWL_BASE_URL:http://localhost:3002}   # self-hosted Firecrawl API
+    ollama-base-url: https://ollama.com                               # Ollama hosted web_search API
+    ollama-api-key: ${OLLAMA_API_KEY:}
+    tavily-api-key: ${TAVILY_API_KEY:}
+```
+
+- **firecrawl-base-url**: Base URL of the self-hosted Firecrawl API. `WebSearchTool` calls `POST {base}/v2/search` (body `{"query": ..., "limit": N}`; response `{"success": true, "data": {"web": [{url, title, description}]}}`) as the FIRST backend in every routing chain. `UrlReaderTool` calls `POST {base}/v2/scrape` (body `{"url": ..., "formats": ["markdown"]}`) as a fallback when Jsoup can't read a page.
+- **Search escalation chain** (executed in ONE `WebSearchTool` call, per `McpToolRouter`): `firecrawl → ddg → ollama_web_search → tavily`. Empty/missing keys degrade to an explicit "not configured" reason instead of a network call.
 
 #### Datasource Configuration
 
@@ -186,7 +191,9 @@ app:
 | `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local Ollama accepts any value. |
 | `OLLAMA_BASE_URL` | No | http://localhost:1234 | Base URL for OpenAI-compatible REST API (Ollama by default) |
 | `LLM_MODEL` | No | gemma-4-26b-a4b-it-qat | Model name — should match locally available Ollama model tag |
-| `OLLAMA_API_KEY` | Conditional | — | Required env var for the web_search MCP server (ollama_web_search.py) |
+| `OLLAMA_API_KEY` | Conditional | — | Bearer token for the ollama_web_search MCP server and the Ollama hosted web_search backend |
+| `FIRECRAWL_BASE_URL` | No | http://localhost:3002 | Base URL of the self-hosted Firecrawl API (search + scrape backends) |
+| `TAVILY_API_KEY` | Conditional | — | Bearer token for the Tavily search API (final fallback backend); empty → backend reports "not configured" |
 
 ---
 

@@ -1,26 +1,30 @@
 ## Purpose
 
-Define how the search pipeline handles SearXNG JSON format responses, DuckDuckGo HTML fallback parsing, MCP server health checks, and default result counts for unknown topics.
+Define how the search pipeline handles Firecrawl v2/search JSON responses, DuckDuckGo HTML fallback parsing, MCP server health checks, and default result counts for unknown topics.
 
 ## Requirements
 
-### Requirement: SearXNG queries use JSON response format
-When searching via local Java HTTP calls to the SearXNG endpoint, the request MUST include `?format=json` parameter so that search results are returned as structured JSON with titles, URLs, and snippets.
+### Requirement: Firecrawl search uses the v2/search JSON API
+When searching via local Java HTTP calls to the self-hosted Firecrawl endpoint, the request MUST be a POST to `{app.search.firecrawl-base-url}/v2/search` with a JSON body `{"query": ..., "limit": N}`, and the response MUST be parsed from `{"success": true, "data": {"web": [{url, title, description}]}}`.
 
-#### Scenario: Request includes JSON format parameter
+#### Scenario: Request is a JSON POST to /v2/search
 - **WHEN** a user searches for any topic through the web search tool
-- **THEN** the SearXNG HTTP GET request URL MUST contain `&format=json` (or `?format=json`) as a query parameter
+- **THEN** the Firecrawl HTTP request MUST be a POST to `/v2/search` with a JSON body containing `query` and `limit`
 
-#### Scenario: Search results are structured JSON with extractable URLs and snippets
-- **WHEN** the SearXNG server responds to a JSON-format search request
-- **THEN** the response body contains an array of result objects, each with at least `title`, `url`, and optionally `content` (snippet) fields
+#### Scenario: Search results are parsed from data.web with extractable URLs and snippets
+- **WHEN** the Firecrawl server responds with `success: true`
+- **THEN** the response's `data.web` array is read for `url`, `title`, and `description` fields, formatted as numbered "Title / URL / Snippet" lines
+
+#### Scenario: Failure payloads trigger escalation instead of a result
+- **WHEN** Firecrawl responds with `success: false`, a non-2xx status, or an empty `data.web` array
+- **THEN** the backend is treated as failed and the routing chain escalates to the next backend within the same tool call
 
 #### Scenario: LLM receives structured results it can parse for tool calling
-- **WHEN** the WebSearchTool returns SearXNG search results to the Spring AI ChatClient
-- **THEN** the result content is valid JSON that the LLM can use to extract URLs and pass them to the `read_url` tool
+- **WHEN** the WebSearchTool returns Firecrawl search results to the Spring AI ChatClient
+- **THEN** the result content contains explicit URLs that the LLM can pass to the `read_url` tool
 
 ### Requirement: DuckDuckGo fallback extracts URLs via Jsoup selectors
-When SearXNG is unavailable and the code falls back to querying DuckDuckGo's HTML search page, the response MUST be parsed using Jsoup to reliably extract article URLs from search result links.
+When Firecrawl is unavailable and the code falls back to querying DuckDuckGo's HTML search page, the response MUST be parsed to reliably extract article URLs from search result links.
 
 #### Scenario: Full DuckDuckGo HTML response is read (not truncated)
 - **WHEN** a DuckDuckGo HTTP request returns successfully
@@ -60,4 +64,4 @@ The fix MUST not require adding any new Maven/Gradle dependencies or external se
 
 #### Scenario: All search functionality works within existing infrastructure
 - **WHEN** the application starts and receives a research request
-- **THEN** only existing components are used (SearXNG, DuckDuckGo, ollama_web_search.py) — no new HTTP clients or API keys needed
+- **THEN** only existing components are used (Firecrawl, DuckDuckGo, Ollama web search, Tavily) — no new HTTP clients or API keys needed

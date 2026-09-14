@@ -17,7 +17,7 @@ spring:
           enabled: true
         stdio:
           connections:
-            # Ollama's hosted web search — 3rd fallback in the McpToolRouter chain (searxng → ddg → ollama_web_search → tavily).
+            # Ollama's hosted web search — 3rd fallback in the McpToolRouter chain (firecrawl → ddg → ollama_web_search → tavily).
             ollama_web_search:
               command: uv
               args:
@@ -25,13 +25,6 @@ spring:
                 - /home/abhi/ollama_web_search.py
               env:
                 OLLAMA_API_KEY: ${OLLAMA_API_KEY}
-            searxng:
-              command: npx
-              args:
-                - "-y"
-                - mcp-searxng
-              env:
-                SEARXNG_URL: http://localhost:9090
             # [browser] extra installs curl_cffi (Chrome TLS impersonation) — DuckDuckGo's bot detection
             # blocks plain httpx clients with empty HTTP 202 pages; search/fetch then auto-fallback to the
             # impersonated backend. See https://github.com/nickclyde/duckduckgo-mcp-server (Backends section).
@@ -76,6 +69,7 @@ app:
     stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
     interval: PT20M     # Scheduler runs every 20 minutes (fixed rate)
   search:
+    firecrawl-base-url: ${FIRECRAWL_BASE_URL:http://localhost:3002}   # self-hosted Firecrawl API — preferred search backend (POST /v2/search) and scrape fallback in UrlReaderTool (POST /v2/scrape)
     ollama-base-url: https://ollama.com   # hosted API used by WebSearchTool's third fallback backend
     ollama-api-key: ${OLLAMA_API_KEY:}    # Bearer token; empty → the ollama backend reports "not configured" instead of calling out
     tavily-api-key: ${TAVILY_API_KEY:}    # Bearer token for Tavily Search API (final fallback); empty → the tavily backend reports "not configured" instead of calling out

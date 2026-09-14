@@ -14,44 +14,44 @@ class McpToolRouterTest {
     // ---------- getPreferredServer ----------
 
     @Test
-    void getPreferredServer_latestInformation_shouldReturnSearxng() {
-        assertThat(router.getPreferredServer("latest-information")).isEqualTo("searxng");
+    void getPreferredServer_latestInformation_shouldReturnFirecrawl() {
+        assertThat(router.getPreferredServer("latest-information")).isEqualTo("firecrawl");
     }
 
     @Test
-    void getPreferredServer_generalSearch_shouldReturnSearxng() {
-        assertThat(router.getPreferredServer("general-search")).isEqualTo("searxng");
+    void getPreferredServer_generalSearch_shouldReturnFirecrawl() {
+        assertThat(router.getPreferredServer("general-search")).isEqualTo("firecrawl");
     }
 
     @Test
-    void getPreferredServer_searchFallback_shouldReturnSearxng() {
-        assertThat(router.getPreferredServer("search-fallback")).isEqualTo("searxng");
+    void getPreferredServer_searchFallback_shouldReturnFirecrawl() {
+        assertThat(router.getPreferredServer("search-fallback")).isEqualTo("firecrawl");
     }
 
     @Test
-    void getPreferredServer_unknownTaskType_shouldStillPreferSearxngViaDefaultChain() {
+    void getPreferredServer_unknownTaskType_shouldStillPreferFirecrawlViaDefaultChain() {
         // Unknown types fall back to the default chain instead of leaving the caller without a backend.
-        assertThat(router.getPreferredServer("unknown-task-type")).isEqualTo("searxng");
+        assertThat(router.getPreferredServer("unknown-task-type")).isEqualTo("firecrawl");
     }
 
     // ---------- getRoutingChain / resolveBackends ----------
 
     @Test
-    void getRoutingChain_latestInformation_shouldReturnSearxngThenDuckDuckGoThenOllamaThenTavily() {
+    void getRoutingChain_latestInformation_shouldReturnFirecrawlThenDuckDuckGoThenOllamaThenTavily() {
         List<String> chain = router.getRoutingChain("latest-information");
-        assertThat(chain).containsExactly("searxng", "ddg", "ollama_web_search", "tavily");
+        assertThat(chain).containsExactly("firecrawl", "ddg", "ollama_web_search", "tavily");
     }
 
     @Test
-    void getRoutingChain_generalSearch_shouldReturnSearxngThenDuckDuckGoThenOllamaThenTavily() {
+    void getRoutingChain_generalSearch_shouldReturnFirecrawlThenDuckDuckGoThenOllamaThenTavily() {
         List<String> chain = router.getRoutingChain("general-search");
-        assertThat(chain).containsExactly("searxng", "ddg", "ollama_web_search", "tavily");
+        assertThat(chain).containsExactly("firecrawl", "ddg", "ollama_web_search", "tavily");
     }
 
     @Test
     void resolveBackends_unknownTaskType_shouldReturnDefaultChainNotEmptyList() {
         // A search must always have at least one backend to try — an empty chain would be a regression.
-        assertThat(router.resolveBackends("unknown-task-type")).containsExactly("searxng", "ddg", "ollama_web_search", "tavily");
+        assertThat(router.resolveBackends("unknown-task-type")).containsExactly("firecrawl", "ddg", "ollama_web_search", "tavily");
     }
 
     @Test
