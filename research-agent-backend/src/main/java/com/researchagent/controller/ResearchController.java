@@ -8,6 +8,7 @@ import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.service.ResearchOrchestratorService;
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -133,7 +134,7 @@ public class ResearchController {
         if (session == null || !session.getStatus().name().equals("PROCESSING")) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
-
+        log.info("Cancelling research session {}", sessionId);
         orchestratorService.cancelResearch(sessionId);
         return ResponseEntity.noContent().build();
     }
@@ -176,7 +177,7 @@ public class ResearchController {
         dto.setTopic(session.getTopic());
         dto.setStatus(session.getStatus().name());
         dto.setPrompt(session.getPrompt());
-       // dto.setFinalReport(session.getFinalReport());
+        dto.setFinalReport(session.getFinalReport());
         dto.setCreatedAt(session.getCreatedAt());
         dto.setUpdatedAt(session.getUpdatedAt());
         dto.setCompletedAt(session.getCompletedAt());

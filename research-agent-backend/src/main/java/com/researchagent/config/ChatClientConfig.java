@@ -5,6 +5,7 @@ import com.researchagent.tool.McpToolRouter;
 import com.researchagent.tool.UrlReaderTool;
 import com.researchagent.tool.WebSearchTool;
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -14,6 +15,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.io.File;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -30,9 +32,8 @@ import java.util.ArrayList;
  * via the toolcallback mechanism. No manual bean injection or tool registration needed here.
  */
 @Configuration
+@Slf4j
 public class ChatClientConfig {
-
-    private static final Logger log = LoggerFactory.getLogger(ChatClientConfig.class);
 
     @Value("${spring.ai.mcp.client.tool-name-prefix:mcp-}")
     private String mcpToolNamePrefix;
@@ -70,15 +71,15 @@ public class ChatClientConfig {
             // This will fail gracefully if no MCP servers are running — that's expected behavior.
             // The important thing is that local fallback chain (WebSearchTool) handles the gap.
             log.info("MCP servers configured in application.yml:");
-            log.info("  - web_search (uv run /home/abhi/ollama_web_search.py) [requires OLLAMA_API_KEY]");
+            log.info("  - ollama_web_search (uv run /home/abhi/ollama_web_search.py) [requires OLLAMA_API_KEY]");
             log.info("  - searxng (npx mcp-searxng) [requires SEARXNG_URL]");
             
             // Check if the ollama_web_search.py script exists on disk
-            java.io.File ollamaScript = new java.io.File("/home/abhi/ollama_web_search.py");
+            File ollamaScript = new java.io.File("/home/abhi/ollama_web_search.py");
             if (!ollamaScript.exists()) {
-                log.warn("MCP server 'web_search' script NOT found: /home/abhi/ollama_web_search.py — tools will be unavailable until this file is present.");
+                log.warn("MCP server 'ollama_web_search' script NOT found: /home/abhi/ollama_web_search.py — tools will be unavailable until this file is present.");
             } else {
-                log.info("MCP server 'web_search' script found: {}", ollamaScript.getAbsolutePath());
+                log.info("MCP server 'ollama_web_search' script found: {}", ollamaScript.getAbsolutePath());
             }
 
         } catch (Exception e) {
@@ -90,7 +91,7 @@ public class ChatClientConfig {
         // Users should verify MCP server status via logs above or by checking which tools
         // appear in the ChatClient tool list at runtime.
         
-        log.info("Local fallback chain: searxng → web_search MCP (always available)");
+        log.info("Search escalation chain per tool call: searxng → ddg → ollama_web_search → tavily (see McpToolRouter.resolveBackends)");
         log.info("================================");
     }
 
@@ -125,7 +126,7 @@ public class ChatClientConfig {
             // Verify the ChatClient has the expected tools registered by attempting a simple call.
             // If MCP servers are running, the LLM should see both local and MCP-prefixed tools.
             try {
-                var result = builder.defaultTools(new WebSearchTool(null), new UrlReaderTool()).build()
+                var result = builder.defaultTools(context.getBean(WebSearchTool.class), context.getBean(UrlReaderTool.class)).build()
                     .prompt().user("You MUST use the search tool to answer this question: What is 2+2?\n" +
                         "Do not respond without calling a tool.")
                     .call()

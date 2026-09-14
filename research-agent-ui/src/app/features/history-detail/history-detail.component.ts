@@ -180,12 +180,20 @@ export class HistoryDetailComponent {
   loadSession(): void {
     this.isLoading.set(true);
     this.hasError.set(false);
-    this.researchService.getHistoricalSession(this.sessionId).subscribe({
+    // Clear the shared session state before fetching — otherwise the template (which renders
+    // `researchSession()` first) would show the previously-viewed session's topic/report while
+    // this request is in flight, making it look like a different history entry was loaded.
+    this.researchService.researchSession.set(null);
+    const requestedId = this.sessionId;
+    this.researchService.getHistoricalSession(requestedId).subscribe({
       next: (session) => {
+        // Ignore stale responses if the user has since navigated to a different session
+        if (requestedId !== this.sessionId) return;
         this.researchService.researchSession.set(session);
         this.isLoading.set(false);
       },
       error: (error) => {
+        if (requestedId !== this.sessionId) return;
         console.error('[HistoryDetailComponent] Failed to load session:', error);
         this.hasError.set(true);
         this.isLoading.set(false);

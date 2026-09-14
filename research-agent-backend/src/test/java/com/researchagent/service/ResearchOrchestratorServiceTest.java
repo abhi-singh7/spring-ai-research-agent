@@ -14,7 +14,9 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 
 import java.lang.reflect.Method;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 
@@ -30,6 +32,7 @@ class ResearchOrchestratorServiceTest {
     @Mock private ResearchSessionRepository sessionRepo;
     @Mock private ResearchStreamingService streamService;
     @Mock private Executor researchTaskExecutor;
+    @Mock private ResearchCancellationRegistry cancellationRegistry;
 
     @InjectMocks
     private ResearchOrchestratorService service;
@@ -87,17 +90,35 @@ class ResearchOrchestratorServiceTest {
     // ---------- cancelResearch ----------
 
     @Test
-    void cancelResearch_shouldMarkProcessingSessionAsFailed() {
+    void cancelResearch_shouldAtomicallyPersistCancelledAndNotify() {
         UUID sessionId = UUID.randomUUID();
         ResearchSession mockSession = new ResearchSession();
         mockSession.setId(sessionId);
         mockSession.setStatus(ResearchStatus.PROCESSING);
-        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(mockSession);
+        when(sessionRepo.findById(sessionId)).thenReturn(Optional.of(mockSession));
+        when(cancellationRegistry.cancel(eq(sessionId))).thenReturn(true);
+        when(sessionRepo.markCancelledIfProcessing(any(UUID.class), any(LocalDateTime.class), eq("Cancelled by user"))).thenReturn(1);
 
         service.cancelResearch(sessionId);
 
-        assertThat(mockSession.getStatus()).isEqualTo(ResearchStatus.FAILED);
+        // CANCELLED is persisted with an atomic conditional update (only while still PROCESSING) — never a stale in-memory mutation.
+        verify(sessionRepo).markCancelledIfProcessing(eq(sessionId), any(LocalDateTime.class), eq("Cancelled by user"));
         verify(streamService).sendProgress(eq(sessionId), eq("Research cancelled by user"));
+    }
+
+    @Test
+    void cancelResearch_shouldPersistEvenWithoutInFlightHandle() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession mockSession = new ResearchSession();
+        mockSession.setId(sessionId);
+        mockSession.setStatus(ResearchStatus.PROCESSING);
+        when(sessionRepo.findById(sessionId)).thenReturn(Optional.of(mockSession));
+        // No live pipeline handle (e.g. the run just finished) — status is still persisted.
+        when(cancellationRegistry.cancel(eq(sessionId))).thenReturn(false);
+
+        service.cancelResearch(sessionId);
+
+        verify(sessionRepo).markCancelledIfProcessing(eq(sessionId), any(LocalDateTime.class), eq("Cancelled by user"));
     }
 
     @Test
@@ -106,20 +127,23 @@ class ResearchOrchestratorServiceTest {
         ResearchSession mockSession = new ResearchSession();
         mockSession.setId(sessionId);
         mockSession.setStatus(ResearchStatus.COMPLETED);
-        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(mockSession);
+        when(sessionRepo.findById(sessionId)).thenReturn(Optional.of(mockSession));
 
         service.cancelResearch(sessionId);
 
         assertThat(mockSession.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
+        verify(cancellationRegistry, never()).cancel(any());
         verifyNoInteractions(streamService);
     }
 
     @Test
     void cancelResearch_shouldDoNothingForNullSession() {
         UUID nonExistentId = UUID.randomUUID();
-        when(sessionRepo.findByIdWithSteps(nonExistentId)).thenReturn(null);
+        when(sessionRepo.findById(nonExistentId)).thenReturn(Optional.empty());
 
         service.cancelResearch(nonExistentId);
+
+        verify(cancellationRegistry, never()).cancel(any());
         verifyNoInteractions(streamService);
     }
 

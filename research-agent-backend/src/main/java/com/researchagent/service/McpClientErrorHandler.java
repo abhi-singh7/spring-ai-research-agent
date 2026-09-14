@@ -30,9 +30,9 @@ public class McpClientErrorHandler {
         
         // Determine fallback based on server type
         if (serverName.equals("searxng")) {
-            log.warn("SearXNG unavailable — search will fall back to Web Search MCP");
-        } else if (serverName.equals("web_search")) {
-            log.warn("Web Search MCP server unavailable — search will use local tools as fallback");
+            log.warn("SearXNG unavailable — search will fall back to DuckDuckGo / Ollama Web Search");
+        } else if (serverName.equals("ollama_web_search")) {
+            log.warn("Ollama Web Search MCP server unavailable — search will use local tools as fallback");
         } else if (serverName.equals("excalidraw")) {
             log.warn("Excalidraw MCP server unavailable — diagram generation will not be available");
         }
@@ -43,9 +43,9 @@ public class McpClientErrorHandler {
      */
     public String getNextSearchFallback(String failedServer) {
         if (failedServer.equals("searxng")) {
-            log.info("Falling back from SearXNG to Web Search MCP");
-            return "web_search";
-        } else if (failedServer.equals("web_search")) {
+            log.info("Falling back from SearXNG to DuckDuckGo / Ollama Web Search");
+            return "ollama_web_search";
+        } else if (failedServer.equals("ollama_web_search")) {
             log.warn("All search providers unavailable — falling back to local tools");
             return null; // No more fallbacks, will use local WebSearchTool
         }
@@ -80,7 +80,7 @@ public class McpClientErrorHandler {
         switch (serverName) {
             case "searxng":
                 return checkSearXNGAvailability();
-            case "web_search":
+            case "ollama_web_search":
                 return checkWebSearchAvailability();
             default:
                 return false;
@@ -113,7 +113,7 @@ public class McpClientErrorHandler {
     public String getMcpServerStatusSummary() {
         StringBuilder sb = new StringBuilder("\n=== MCP Server Status ===\n");
         
-        sb.append("web_search: ").append(isMcpServerAvailable("web_search") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
+        sb.append("ollama_web_search: ").append(isMcpServerAvailable("ollama_web_search") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
         sb.append("searxng:    ").append(isMcpServerAvailable("searxng") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
         
         sb.append("================================\n");

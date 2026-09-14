@@ -58,6 +58,9 @@ export class ResearchService {
   private sseSource: EventSource | null = null;
   private stallTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Reconnect attempts across connection generations — reset on 'open', so backoff actually escalates. */
+  private sseReconnectAttempts = 0;
+
   /** Connect to the SSE stream for a given session */
   connectSse(sessionId: string, streamUrl?: string): void {
     this.disconnectSse();
@@ -82,6 +85,7 @@ export class ResearchService {
     let lastChunkTime = 0;
     this.sseSource.addEventListener('REPORT_CHUNK', (event: unknown) => {
       const data: ResearchModels.ReportChunkSseEvent = JSON.parse((event as MessageEvent).data);
+      console.log('[ResearchService] REPORT_CHUNK received:', data.payload);
       this._reportContentSignal.update(content => content + data.payload);
 
       // Reset the stall timer on every chunk arrival — LLMs stream slowly on local models
@@ -95,6 +99,7 @@ export class ResearchService {
     // REPORT_DONE events - full report is ready
     this.sseSource.addEventListener('REPORT_DONE', (event: unknown) => {
       const data: ResearchModels.ReportDoneSseEvent = JSON.parse((event as MessageEvent).data);
+      console.log('[ResearchService] REPORT_DONE received:', data.payload);
       this._reportContentSignal.set(data.payload);
       this.clearStallTimer();
 
@@ -107,8 +112,9 @@ export class ResearchService {
         })));
       }
 
-      // Update session status to COMPLETED regardless of previous state
-      this.researchSession.update(s => s ? ({ ...s, status: 'COMPLETED' }) : null);
+      // Update session to COMPLETED and persist the final report into it so the report renders immediately —
+      // components key off `researchSession().finalReport`, which polling may not have set yet.
+      this.researchSession.update(s => s ? ({ ...s, status: 'COMPLETED', finalReport: data.payload }) : null);
       // Stop streaming — report is fully received, no more events expected
       this.isStreaming.set(false);
     });
@@ -176,13 +182,15 @@ export class ResearchService {
       this.startStallTimer(sessionId);
     });
 
-    // Open event - connection established
+    // Open event - connection established (also proves a reconnection actually worked → reset the counter)
     this.sseSource.addEventListener('open', () => {
       console.log('[ResearchService] SSE connected for session:', sessionId);
+      this.sseReconnectAttempts = 0;
     });
 
-    // Error / reconnect handling with exponential backoff
-    let reconnectAttempts = 0;
+    // Error / reconnect handling with exponential backoff.
+    // Attempts are a SERVICE field (not per-connection): each connectSse() builds a fresh EventSource and old
+    // closures die, so a closure-local counter could never escalate or reach the polling fallback.
     const maxReconnectAttempts = 3;
 
     const onError = () => {
@@ -198,21 +206,22 @@ export class ResearchService {
         }
 
         // Try reconnection with exponential backoff before falling back to polling
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 8000); // 1s, 2s, 4s, capped at 8s
-          console.info(`[ResearchService] Attempting SSE reconnection in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})...`);
+        if (this.sseReconnectAttempts < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, this.sseReconnectAttempts), 8000); // 1s, 2s, 4s, capped at 8s
+          console.info(`[ResearchService] Attempting SSE reconnection in ${delay}ms (attempt ${this.sseReconnectAttempts + 1}/${maxReconnectAttempts})...`);
 
           this.errorSubject.next('Connection lost — reconnecting...');
 
+          this.sseReconnectAttempts++;
           setTimeout(() => {
             if (this.researchSession()?.status === 'PROCESSING') {
               try {
-                this.connectSse(sessionId);
-                reconnectAttempts = 0; // Reset on successful reconnection
-                console.info('[ResearchService] SSE reconnected successfully');
+                this.connectSse(sessionId); // attempts reset by the new connection's 'open' event
               } catch {
-                reconnectAttempts++;
+                // Could not even construct the EventSource — next error advances the counter further.
               }
+            } else {
+              this.sseReconnectAttempts = 0; // No longer PROCESSING — abandon reconnection
             }
           }, delay);
         } else {
@@ -235,6 +244,7 @@ export class ResearchService {
   /** Disconnect the current SSE connection */
   disconnectSse(): void {
     this.clearStallTimer();
+    this.sseReconnectAttempts = 0;
     if (this.sseSource) {
       this.sseSource.close();
       this.sseSource = null;
@@ -361,11 +371,10 @@ export class ResearchService {
     return new Observable(observer => {
       this.http.delete<void>(`${this.baseUrl}/${sessionId}`).subscribe({
         next: () => {
+          // Close SSE and let polling take over status. The first poll finds CANCELLED in the DB, renders the
+          // chip + persisted steps + final report ("Cancelled by user"), then stops itself automatically.
           this.disconnectSse();
-          this._researchStepsSignal.set([]);
-          this._reportContentSignal.set('');
-          this.isStreaming.set(false);
-          this.researchSession.set(null);
+          this.startPolling(sessionId);
           observer.next(undefined as void);
         },
         error: err => observer.error(err)
