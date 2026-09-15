@@ -2,7 +2,7 @@
 
 ## Overview
 
-The backend uses PostgreSQL with JPA entities and a single Flyway migration file. The schema consists of two tables: `research_session` (top-level) and `research_step` (child, cascading delete).
+The backend uses PostgreSQL with JPA entities and a single migration file (no Flyway). The schema consists of two tables: `research_session` (top-level) and `research_step` (child, cascading delete).
 
 ---
 
@@ -12,7 +12,7 @@ The backend uses PostgreSQL with JPA entities and a single Flyway migration file
 
 **Location**: `src/main/resources/db/migration/V1__init_research_tables.sql`
 
-This is the only migration file. Flyway is configured in `application.yml` but the dependency is commented out in `pom.xml`. The schema validation mode (`ddl-auto: validate`) ensures entities match the database without auto-creation.
+This is the only migration file. There is no Flyway (or any auto-migration) in use — schema validation relies on JPA entities matching the existing tables via `ddl-auto: validate`, which checks that the entities match the database without auto-creating or modifying anything.
 
 **Note**: Database must be created manually before first run:
 ```bash

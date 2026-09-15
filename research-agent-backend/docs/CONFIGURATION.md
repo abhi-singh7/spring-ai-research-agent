@@ -42,13 +42,13 @@ spring:
       base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
       chat:
         options:
-          model: ${LLM_MODEL:gemma-4-26b-a4b-it-qat }
+          model: ${LLM_MODEL:google/gemma-4-26b-a4b-qat}
           temperature: 0.7
 ```
 
 - **api-key**: API key for the OpenAI-compatible LLM endpoint. For local Ollama, any string works since Ollama doesn't require authentication.
 - **base-url**: Base URL for the OpenAI-compatible REST API. Defaults to `http://localhost:1234` (Ollama's default). Change if running a different LLM backend. Note: no `/v1` suffix in the default — matches Ollama's actual endpoint structure.
-- **model**: The model name for all LLM calls. Default is `gemma-4-26b-a4b-it-qat`. Commented alternative: `qwopus3.6-35b-a3b-v1`. Should match the locally available Ollama model tag.
+- **model**: The model name for all LLM calls. Default is `google/gemma-4-26b-a4b-qat`. Commented alternative: `qwopus3.6-35b-a3b-v1`. Should match the locally available Ollama model tag.
 - **temperature**: Controls randomness in text generation (0.7 = balanced creativity/determinism).
 
 #### MCP Server Configuration
@@ -144,11 +144,11 @@ Configures Spring's default task executor pool sizes for async research processi
 ```yaml
 app:
   cleanup:
-    stale-after: PT1H   # PROCESSING sessions older than this are considered abandoned
+    stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
     interval: PT2M      # Scheduler runs at this fixed rate (default documented as PT30M in code)
 ```
 
-- **stale-after**: Duration after which a stuck PROCESSING session is marked CANCELLED by the cleanup scheduler. Default `PT1H` = 1 hour.
+- **stale-after**: Duration after which a stuck PROCESSING session is marked CANCELLED by the cleanup scheduler. Default `PT15M` = 15 minutes.
 - **interval**: Fixed-rate interval for the cleanup task. Default `PT2M` per YAML, but the code's fallback is `PT30M`. The actual runtime value depends on which takes precedence in Spring's property resolution.
 
 ---
@@ -190,7 +190,7 @@ app:
 | `DB_PASSWORD` | No | postgres | PostgreSQL password for database connection |
 | `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local Ollama accepts any value. |
 | `OLLAMA_BASE_URL` | No | http://localhost:1234 | Base URL for OpenAI-compatible REST API (Ollama by default) |
-| `LLM_MODEL` | No | gemma-4-26b-a4b-it-qat | Model name — should match locally available Ollama model tag |
+| `LLM_MODEL` | No | google/gemma-4-26b-a4b-qat | Model name — should match locally available Ollama model tag |
 | `OLLAMA_API_KEY` | Conditional | — | Bearer token for the ollama_web_search MCP server and the Ollama hosted web_search backend |
 | `FIRECRAWL_BASE_URL` | No | http://localhost:3002 | Base URL of the self-hosted Firecrawl API (search + scrape backends) |
 | `TAVILY_API_KEY` | Conditional | — | Bearer token for the Tavily search API (final fallback backend); empty → backend reports "not configured" |

@@ -114,8 +114,8 @@ Retrieves a completed session's final report (truncated to 2000 chars for prompt
 
 #### `AbandonedSessionCleanupService` — Stale Session Cleanup
 
-Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold (default: 1 hour) as CANCELLED. Runs at a fixed interval (default: every 30 minutes). Configured via `application.yml`:
-- `app.cleanup.stale-after: PT1H` — duration after which a session is considered stale
+Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold (default: 15 minutes) as CANCELLED. Runs at a fixed interval (default: every 20 minutes). Configured via `application.yml`:
+- `app.cleanup.stale-after: PT15M` — duration after which a session is considered stale
 - `app.cleanup.interval: PT2M` — scheduler run interval
 
 Uses `@Scheduled(fixedRateString = "${app.cleanup.interval}")` and queries `ResearchSessionRepository.findAllByStatusAndCreatedAtBefore()`.

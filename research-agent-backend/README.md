@@ -12,8 +12,8 @@ Spring Boot + Spring AI application for autonomous research.
 Set these environment variables:
 - `DB_USERNAME` — PostgreSQL username (default: postgres)
 - `DB_PASSWORD` — PostgreSQL password (default: postgres)
-- `OLLAMA_BASE_URL` — Local LLM API URL (default: http://localhost:1234/v1)
-- `LLM_MODEL` — Model name (default: llama3.1)
+- `OLLAMA_BASE_URL` — Local LLM API URL (default: http://localhost:1234 — no `/v1` suffix)
+- `LLM_MODEL` — Model name (default: google/gemma-4-26b-a4b-qat)
 - `TAVILY_API_KEY` — Optional Tavily Search API key for enhanced search
 
 ## Run
