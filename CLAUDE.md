@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> New to the project or onboarding? Start with [TEAM.md](../TEAM.md) — a human-friendly overview of what the app does, how to run it, and where everything lives.
+
 ## Architecture Overview
 
 The Research Agent application is a full-stack system that takes a user's research topic, autonomously breaks it down into sub-topics, searches the web for each using an LLM with MCP tool calling, reads content from multiple sources, synthesizes findings into a comprehensive report, and displays everything in real-time via SSE streaming.
@@ -25,7 +27,7 @@ mvn spring-boot:run
 curl http://localhost:8080/api/research/history
 ```
 
-Requires PostgreSQL and a local LLM endpoint (e.g., Ollama at `http://localhost:1234/v1`) configured in `application.yml`.
+Requires PostgreSQL and a local LLM endpoint (e.g., Ollama at `http://localhost:1234`) configured in `application.yml`.
 
 ### Frontend (`research-agent-ui/`)
 ```bash
@@ -81,10 +83,10 @@ The proxy config forwards `/api` requests to the Spring Boot backend.
 ## Important Implementation Details
 
 1. **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact, not the old milestone name. Config classes are auto-configured — no bean definitions needed. See ChatClientConfig.java.
-2. **MCP tool routing**: Four stdio-based MCP servers (`web_search`, `searxng`, `excalidraw`, `ddg_search`) configured in application.yml. The `McpToolRouter` component routes search tasks to preferred server chains with fallbacks. Local Java tools (WebSearchTool, UrlReaderTool) serve as fallback when MCP servers are unavailable.
+2. **Search backend routing**: Search backends are executed by WebSearchTool over HTTP in ONE tool call: `firecrawl → ddg → ollama_web_search → tavily` (see McpToolRouter). Firecrawl is a self-hosted API (`app.search.firecrawl-base-url`, default `http://localhost:3002`) — NOT an MCP server. Two stdio MCP servers (`ollama_web_search`, `ddg_search`) are additionally configured in application.yml; UrlReaderTool escalates to Firecrawl's `/v2/scrape` when Jsoup can't read a page.
 3. **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
 4. **tsConfig in angular.json**: Only add `tsConfig` to the `build` builder options, NOT the `serve` builder (schema validation error).
 5. **Angular Material M3 theming**: Use `mat.define-theme((color: ()))` for default theme. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — it cannot be called at root level.
 6. **SSE resilience**: Frontend uses exponential backoff reconnection (max 3 attempts) before falling back to polling. A 90-second stall timer forces completion detection if no chunks arrive during report generation.
-7. **Abandoned session cleanup**: `AbandonedSessionCleanupService` marks PROCESSING sessions stuck >1 hour as CANCELLED every 30 minutes. Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
+7. **Abandoned session cleanup**: `AbandonedSessionCleanupService` marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`). Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
 8. **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Changes require manual migration or disabling validate mode in dev. `hibernate.jdbc.lob.non_contextual_creation=true` is required to avoid PostgreSQL LOB API errors.

@@ -7,8 +7,8 @@ import org.springframework.stereotype.Component;
 /**
  * Error handling and fallback chain for MCP server failures.
  * 
- * When an MCP server is unavailable, this handler provides graceful degradation:
- * - SearXNG unavailable → Web Search (MCP)
+ * When a search backend/MCP server is unavailable, this handler provides graceful degradation:
+ * - Firecrawl unavailable → DuckDuckGo / Ollama Web Search (see McpToolRouter chain)
  * - Timeout errors → retry with longer timeout or skip
  * - Invalid responses → log error, continue without that tool
  */
@@ -29,8 +29,10 @@ public class McpClientErrorHandler {
         log.error("MCP server '{}' failed to start: {}", serverName, error.getMessage());
         
         // Determine fallback based on server type
-        if (serverName.equals("searxng")) {
-            log.warn("SearXNG unavailable — search will fall back to DuckDuckGo / Ollama Web Search");
+        if (serverName.equals("firecrawl")) {
+            log.warn("Firecrawl unavailable — search will fall back to DuckDuckGo / Ollama Web Search");
+        } else if (serverName.equals("ddg_search")) {
+            log.warn("DuckDuckGo MCP server unavailable — search will use local tools as fallback");
         } else if (serverName.equals("ollama_web_search")) {
             log.warn("Ollama Web Search MCP server unavailable — search will use local tools as fallback");
         } else if (serverName.equals("excalidraw")) {
@@ -42,10 +44,16 @@ public class McpClientErrorHandler {
      * Determine the next fallback server in the chain when a search provider is unavailable.
      */
     public String getNextSearchFallback(String failedServer) {
-        if (failedServer.equals("searxng")) {
-            log.info("Falling back from SearXNG to DuckDuckGo / Ollama Web Search");
+        if (failedServer.equals("firecrawl")) {
+            log.info("Falling back from Firecrawl to DuckDuckGo / Ollama Web Search");
+            return "ddg";
+        } else if (failedServer.equals("ddg")) {
+            log.info("Falling back from DuckDuckGo to Ollama Web Search");
             return "ollama_web_search";
         } else if (failedServer.equals("ollama_web_search")) {
+            log.info("Falling back from Ollama Web Search to Tavily");
+            return "tavily";
+        } else if (failedServer.equals("tavily")) {
             log.warn("All search providers unavailable — falling back to local tools");
             return null; // No more fallbacks, will use local WebSearchTool
         }
@@ -78,8 +86,8 @@ public class McpClientErrorHandler {
      */
     public boolean isMcpServerAvailable(String serverName) {
         switch (serverName) {
-            case "searxng":
-                return checkSearXNGAvailability();
+            case "firecrawl":
+                return checkFirecrawlAvailability();
             case "ollama_web_search":
                 return checkWebSearchAvailability();
             default:
@@ -87,14 +95,16 @@ public class McpClientErrorHandler {
         }
     }
 
-    private boolean checkSearXNGAvailability() {
+    private boolean checkFirecrawlAvailability() {
+        // The self-hosted Firecrawl API has no /health endpoint — ANY HTTP response (even 404) proves
+        // the server is listening on its port.
         try {
             java.net.HttpURLConnection connection = 
-                (java.net.HttpURLConnection) new java.net.URL("http://localhost:8080").openConnection();
+                (java.net.HttpURLConnection) new java.net.URL("http://localhost:3002/").openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(2000);
-            int code = connection.getResponseCode();
-            return code >= 200 && code < 300;
+            connection.getResponseCode();
+            return true;
         } catch (Exception e) {
             return false;
         }
@@ -113,8 +123,8 @@ public class McpClientErrorHandler {
     public String getMcpServerStatusSummary() {
         StringBuilder sb = new StringBuilder("\n=== MCP Server Status ===\n");
         
+        sb.append("firecrawl:         ").append(isMcpServerAvailable("firecrawl") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
         sb.append("ollama_web_search: ").append(isMcpServerAvailable("ollama_web_search") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
-        sb.append("searxng:    ").append(isMcpServerAvailable("searxng") ? "AVAILABLE" : "UNAVAILABLE").append("\n");
         
         sb.append("================================\n");
         return sb.toString();

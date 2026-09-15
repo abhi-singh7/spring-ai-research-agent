@@ -20,11 +20,12 @@ The backend is a Spring Boot application that orchestrates AI-powered research t
                           └──────────────────────────────────┘
 
           ┌─────────────────────────────────────────────┐
-          │         MCP Tool Servers (stdio)             │
+          │         Search Backends                      │
           │                                              │
-          │  web_search → ollama_web_search.py           │
-          │  searxng    → mcp-searxng                    │
-          │  ddg_search → duckduckgo-mcp-server          │
+          │  firecrawl  → self-hosted API (port 3002)    │
+          │               POST /v2/search, /v2/scrape    │
+          │  ollama_web_search → ollama_web_search.py    │
+          │  ddg_search → duckduckgo-mcp-server         │
           └─────────────────────────────────────────────┘
 ```
 
@@ -92,7 +93,7 @@ Phase 3 — Final Report Synthesis (streaming)
 **Key orchestration logic:**
 - Parses JSON response from Phase 1 breakdown using Jackson `ObjectMapper`, with fallback creating a single generic SubTopic if parsing fails
 - In Phase 2, limits iteration to `Math.min(subTopics.size(), maxIterations)` — whichever is smaller
-- Uses MCP tool routing (`McpToolRouter`) for search tasks: routes "latest-information" → searxng→web_search chain; falls back to local Java tools when MCP unavailable
+- Uses search backend routing (`McpToolRouter`) for search tasks: routes every task type through the `firecrawl → ddg → ollama_web_search → tavily` chain, executed in ONE WebSearchTool call
 - Builds findings as markdown-formatted strings: `"## Sub-Topic: {title}\n\n{finding}"` for each sub-topic
 - Phase 3 uses `.stream().content()` returning `Flux<String>` directly to stream chunks via SSE
 - Accumulates report content in an `AtomicReference<StringBuilder>` during streaming, then saves the full text after completion
@@ -113,8 +114,8 @@ Retrieves a completed session's final report (truncated to 2000 chars for prompt
 
 #### `AbandonedSessionCleanupService` — Stale Session Cleanup
 
-Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold (default: 1 hour) as CANCELLED. Runs at a fixed interval (default: every 30 minutes). Configured via `application.yml`:
-- `app.cleanup.stale-after: PT1H` — duration after which a session is considered stale
+Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold (default: 15 minutes) as CANCELLED. Runs at a fixed interval (default: every 20 minutes). Configured via `application.yml`:
+- `app.cleanup.stale-after: PT15M` — duration after which a session is considered stale
 - `app.cleanup.interval: PT2M` — scheduler run interval
 
 Uses `@Scheduled(fixedRateString = "${app.cleanup.interval}")` and queries `ResearchSessionRepository.findAllByStatusAndCreatedAtBefore()`.
@@ -123,17 +124,17 @@ Uses `@Scheduled(fixedRateString = "${app.cleanup.interval}")` and queries `Rese
 
 #### `WebSearchTool` — Local Java Fallback
 Defines tool methods annotated with Spring AI's `@Tool` annotation:
-- **`search(String query)`** — Calls a web search API, formats results with titles, URLs, and snippets
-- **`readUrl(String url)`** — Fetches content from a URL using HTTP + JSoup HTML parsing
+- **`search(String query)`** — Executes the routed backend chain (Firecrawl first via POST /v2/search), formats results with titles, URLs, and snippets
+- **`read_url(String url)`** — Fetches content from a URL using JSoup HTML parsing; escalates to Firecrawl's POST /v2/scrape (markdown) when Jsoup fails or finds no readable body
 
 #### `UrlReaderTool` — Local Java Fallback (URL Content Extraction)
 Additional tool for extracting readable content from URLs. Works alongside `WebSearchTool`.
 
 #### `McpToolRouter` — MCP Server Routing Logic
-Routes LLM search tasks to appropriate MCP servers based on task type:
-- `"latest-information"` → searxng → web_search chain
-- `"general-search"` → searxng → web_search chain  
-- `"search-fallback"` → searxng → web_search chain
+Routes LLM search tasks to appropriate backends based on task type:
+- `"latest-information"` → firecrawl → ddg → ollama_web_search → tavily
+- `"general-search"` → firecrawl → ddg → ollama_web_search → tavily  
+- `"search-fallback"` → firecrawl → ddg → ollama_web_search → tavily
 
 The `McpToolRouter.getPreferredServer()` returns the first server in the chain (primary), while `getRoutingChain()` returns all fallback servers. The Spring AI MCP client handles the actual tool calling; this router is used to determine task type categorization.
 

@@ -53,3 +53,5 @@ node_modules/
 
 # === Ollama (if used locally) ===
 ollama_models/
+
+.idea

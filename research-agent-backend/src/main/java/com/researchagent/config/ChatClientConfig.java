@@ -72,7 +72,8 @@ public class ChatClientConfig {
             // The important thing is that local fallback chain (WebSearchTool) handles the gap.
             log.info("MCP servers configured in application.yml:");
             log.info("  - ollama_web_search (uv run /home/abhi/ollama_web_search.py) [requires OLLAMA_API_KEY]");
-            log.info("  - searxng (npx mcp-searxng) [requires SEARXNG_URL]");
+            log.info("Search backends are NOT MCP — WebSearchTool calls them directly over HTTP:");
+            log.info("  - firecrawl (self-hosted Firecrawl API, app.search.firecrawl-base-url, POST /v2/search)");
             
             // Check if the ollama_web_search.py script exists on disk
             File ollamaScript = new java.io.File("/home/abhi/ollama_web_search.py");
@@ -91,7 +92,7 @@ public class ChatClientConfig {
         // Users should verify MCP server status via logs above or by checking which tools
         // appear in the ChatClient tool list at runtime.
         
-        log.info("Search escalation chain per tool call: searxng → ddg → ollama_web_search → tavily (see McpToolRouter.resolveBackends)");
+        log.info("Search escalation chain per tool call: firecrawl → ddg → ollama_web_search → tavily (see McpToolRouter.resolveBackends)");
         log.info("================================");
     }
 

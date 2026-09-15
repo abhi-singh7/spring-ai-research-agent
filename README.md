@@ -9,8 +9,8 @@ A full-stack AI-powered research tool: submit a topic → LLM breaks it into sub
 | **Backend** | Java 21 + Spring Boot 3.5.4 + Spring AI 1.1.7 (OpenAI-compatible local LLM) — `research-agent-backend/` |
 | **Frontend** | Angular 18+ with Signals/RxJS + Angular Material M3 — `research-agent-ui/` |
 | **Database** | PostgreSQL |
-| **LLM** | Ollama (OpenAI-compatible endpoint, e.g., gemma-4-26b) |
-| **Search Tools** | MCP stdio servers: web_search, searxng, ddg_search + local fallback tools |
+| **LLM** | Ollama (OpenAI-compatible endpoint, e.g., gemma-4-26b-a4b-qat) |
+| **Search Tools** | Self-hosted Firecrawl API (search + scrape) + MCP stdio servers: ollama_web_search, ddg_search + local fallback tools |
 
 ## Project Structure
 
@@ -25,7 +25,7 @@ Research-Agent/
 │   │   │   ├── entity/              # JPA entities (ResearchSession, ResearchStep)
 │   │   │   └── enums/               # ResearchStatus, StepType
 │   │   ├── repository/              # Spring Data JPA repositories
-│   │   ├── service/                 # Core business logic (orchestrator, streaming, cleanup)
+│   │   ├── service/                 # Core business logic (orchestrator, streaming, cleanup, follow-up)
 │   │   ├── tool/                    # MCP tool router + local tools (WebSearchTool, UrlReaderTool)
 │   │   └── ResearchAgentApplication.java
 │   ├── src/main/resources/
@@ -86,8 +86,8 @@ graph TD
     User["Browser (port 4200)"] -->|"REST + SSE"| Backend["Spring Boot (port 8080)"]
     Backend -->|"OpenAI-compatible HTTP API"| Ollama["Ollama LLM (port 1234)"]
     Backend -->|"JDBC"| Postgres["PostgreSQL (research-agent DB)"]
-    Backend -->|"MCP stdio"| WebSearch["web_search MCP server"]
-    Backend -->|"MCP stdio"| SearXNG["searxng MCP server"]
+    Backend -->|"HTTP /v2/search + /v2/scrape"| Firecrawl["Firecrawl API (port 3002)"]
+    Backend -->|"MCP stdio"| WebSearch["ollama_web_search MCP server"]
     Backend -->|"MCP stdio"| DDG["ddg_search MCP server"]
 ```
 
@@ -102,17 +102,18 @@ See [Backend ARCHITECTURE](research-agent-backend/docs/ARCHITECTURE.md) and [Fro
 ## Key Implementation Notes
 
 - **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact (NOT the old milestone name). Config classes are auto-configured — no bean definitions needed.
-- **MCP Tool Routing**: Four stdio-based MCP servers (`web_search`, `searxng`, `excalidraw`, `ddg_search`) are configured in `application.yml`. The `McpToolRouter` component routes search tasks to preferred servers with fallback chains. Local Java tools (`WebSearchTool`, `UrlReaderTool`) serve as fallback when MCP servers are unavailable.
+- **Search Backend Routing**: Search backends run over HTTP inside ONE `WebSearchTool` call: `firecrawl → ddg → ollama_web_search → tavily` (routed by `McpToolRouter`). Firecrawl is a self-hosted API (`app.search.firecrawl-base-url`, default `http://localhost:3002`) — not an MCP server. Two stdio MCP servers (`ollama_web_search`, `ddg_search`) are additionally configured in `application.yml`; `UrlReaderTool` escalates to Firecrawl's `/v2/scrape` when Jsoup can't read a page.
 - **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
 - **Angular Material M3 theming**: Use `mat.define-theme((color: ()))`. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — cannot be called at root level.
 - **SSE streaming**: Backend uses `Flux<String>` via `.stream().content()`; frontend detects connection loss with exponential backoff reconnection and falls back to polling on failure. A stall timer (90s) forces completion detection if no chunks arrive during report generation.
-- **Abandoned session cleanup**: Background scheduler marks PROCESSING sessions stuck >1 hour as CANCELLED every 30 minutes (configurable via `app.cleanup.stale-after` and `app.cleanup.interval`).
+- **Abandoned session cleanup**: Background scheduler marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`).
 - **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Schema is defined in `db/migration/V1__init_research_tables.sql`.
 
 ## Documentation Index
 
 | Document | Location | Description |
 |----------|----------|-------------|
+| Team & User Guide | [TEAM.md](TEAM.md) | Human-friendly project overview and onboarding |
 | Backend Architecture | [research-agent-backend/docs/ARCHITECTURE.md](research-agent-backend/docs/ARCHITECTURE.md) | Component layout, data flow, orchestration pipeline |
 | Backend API Reference | [research-agent-backend/docs/API.md](research-agent-backend/docs/API.md) | REST endpoints + SSE event types with examples |
 | Backend Data Models | [research-agent-backend/docs/MODELS.md](research-agent-backend/docs/MODELS.md) | Entities, DTOs, enums, and internal models |
@@ -125,5 +126,6 @@ See [Backend ARCHITECTURE](research-agent-backend/docs/ARCHITECTURE.md) and [Fro
 
 ## Development Workflow
 
-1. See [CLAUDE.md](CLAUDE.md) for AI agent-specific guidance on this repository.
-2. Changes follow the OpenSpec workflow tracked under `openspec/changes/<name>/`.
+1. New to the project or onboarding? Start with [TEAM.md](TEAM.md) — a human-friendly overview of what the app does, how to run it, and where everything lives.
+2. See [CLAUDE.md](CLAUDE.md) for AI agent-specific guidance on this repository.
+3. Changes follow the OpenSpec workflow tracked under `openspec/changes/<name>/`.

@@ -17,7 +17,7 @@ mvn spring-boot:run          # port 8080 default
 curl http://localhost:8080/api/research/history   # verify
 ```
 
-Requires PostgreSQL and a local LLM endpoint — configured in `src/main/resources/application.yml`. Default model: `gemma-4-26b-a4b-it-qat` (commented alternative: `qwopus3.6-35b-a3b-v1`).
+Requires PostgreSQL and a local LLM endpoint — configured in `src/main/resources/application.yml`. Default model: `google/gemma-4-26b-a4b-qat` (commented alternative: `qwopus3.6-35b-a3b-v1`).
 
 ### Frontend (`research-agent-ui/`)
 ```bash
@@ -28,26 +28,31 @@ npm start                     # proxy.conf.json forwards /api → localhost:8080
 ## Key Implementation Gotchas
 
 - **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact (NOT `spring-ai-openai-spring-boot-starter`). Config classes are auto-configured — no bean definitions needed. See ChatClientConfig.java.
-- **MCP tool routing**: Four stdio-based MCP servers (`web_search`, `searxng`, `excalidraw`, `ddg_search`) are configured in application.yml. The `McpToolRouter` component routes search tasks to preferred server chains with fallbacks. Local Java tools (`WebSearchTool`, `UrlReaderTool`) serve as fallback when MCP servers are unavailable.
+- **Search backend routing**: Search backends are executed by `WebSearchTool` over HTTP in ONE tool call: `firecrawl → ddg → ollama_web_search → tavily` (see `McpToolRouter.resolveBackends`). Firecrawl is a self-hosted API (`app.search.firecrawl-base-url`, default `http://localhost:3002`) — NOT an MCP server. Two stdio MCP servers (`ollama_web_search`, `ddg_search`) are additionally auto-configured in application.yml; `UrlReaderTool` escalates to Firecrawl's `/v2/scrape` when Jsoup can't read a page.
 - **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
 - **Angular Material M3 theming**: Use `mat.define-theme((color: ()))`. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — cannot be called at root level. See styles.scss.
 - **SSE streaming resilience**: Backend uses `Flux<String>` via `.stream().content()`; frontend detects connection loss with exponential backoff reconnection (3 attempts) and falls back to polling on failure. A 90-second stall timer forces completion detection if no chunks arrive during report generation.
 - **Iterative research + provenance**: Each sub-topic runs up to N LLM rounds (request `maxIterations`, else `app.research.default-max-iterations`: 3) — round 1 sweeps planned search queries, later rounds chase Open Questions. Early stop on coverage (≥3 captured source URLs AND ≥400 chars findings) or when a round adds no new URLs (round ≥2). References are built ONLY from "Title — URL" lines parsed out of research notes (deduped by normalized URL); the synthesis prompt forbids citing uncaptured URLs. Per-sub-topic failures become FAILED steps and continue; only total failure fails the session. Runs on an async pool thread with **no** OSIV/Hibernate session — load via `findByIdWithSteps` (fetch-join) so lazy `steps` mutations are safe outside a transaction; never rely on ambient sessions in this flow. Step ids are DB-generated, so always **adopt the instance returned by `repo.save()`** (`session = sessionRepo.save(session)`), or already-persisted steps re-insert with duplicate keys on later merges — covered by `OrchestratorPersistenceIntegrationTest`.
-- **Abandoned session cleanup**: Background scheduler (`@Scheduled`) marks PROCESSING sessions stuck >1 hour as CANCELLED every 30 minutes. Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
+- **Abandoned session cleanup**: Background scheduler (`@Scheduled`) marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`). Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
 - **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Changes require manual migration or disabling validate mode in dev. `hibernate.jdbc.lob.non_contextual_creation=true` is required to avoid PostgreSQL LOB API errors.
 
-## MCP Tool Server Connections
+## Search Backends & MCP Tool Servers
 
-Four stdio-based MCP servers auto-configured via `application.yml`:
+Two stdio-based MCP servers auto-configured via `application.yml`:
 
 | Server | Command | Purpose |
 |--------|---------|---------|
-| web_search | `uv run /home/abhi/ollama_web_search.py` | Web search (requires OLLAMA_API_KEY) |
-| searxng | `npx -y mcp-searxng` | SearXNG search (requires SEARXNG_URL at localhost:9090) |
-| excalidraw | `node /home/abhi/excalidraw-mcp/dist/index.js --stdio` | Diagram generation |
-| ddg_search | `uvx duckduckgo-mcp-server` | DuckDuckGo fallback search |
+| ollama_web_search | `uv run /home/abhi/ollama_web_search.py` | Web search (requires OLLAMA_API_KEY) |
+| ddg_search | `uvx duckduckgo-mcp-server[browser]` | DuckDuckGo fallback search |
 
-Local Java tools (WebSearchTool, UrlReaderTool) serve as fallback when MCP servers are unavailable. See McpToolRouter.java for routing logic and ChatClientConfig.java for tool registration.
+The preferred search/scrape backends are plain HTTP APIs called directly by the local Java tools (NOT MCP servers):
+
+| Backend | Endpoint | Purpose |
+|---------|----------|---------|
+| firecrawl search | `POST {app.search.firecrawl-base-url}/v2/search` (default `http://localhost:3002`) | First backend in every McpToolRouter chain — self-hosted Firecrawl API |
+| firecrawl scrape | `POST {app.search.firecrawl-base-url}/v2/scrape` with `{"formats":["markdown"]}` | UrlReaderTool fallback when Jsoup fails or finds no readable body |
+
+See McpToolRouter.java for routing logic, WebSearchTool.java / UrlReaderTool.java for execution, and ChatClientConfig.java for tool registration.
 
 ## Key Files
 

@@ -17,15 +17,27 @@ class McpClientErrorHandlerTest {
     // ---------- getNextSearchFallback ----------
 
     @Test
-    void getNextSearchFallback_searxng_shouldReturnOllamaWebSearch() {
-        String fallback = handler.getNextSearchFallback("searxng");
+    void getNextSearchFallback_firecrawl_shouldReturnDuckDuckGo() {
+        String fallback = handler.getNextSearchFallback("firecrawl");
+        assertThat(fallback).isEqualTo("ddg");
+    }
+
+    @Test
+    void getNextSearchFallback_ddg_shouldReturnOllamaWebSearch() {
+        String fallback = handler.getNextSearchFallback("ddg");
         assertThat(fallback).isEqualTo("ollama_web_search");
     }
 
     @Test
-    void getNextSearchFallback_ollamaWebSearch_shouldReturnNull() {
-        // When: all search providers are down, fall back to local tools
+    void getNextSearchFallback_ollamaWebSearch_shouldReturnTavily() {
         String fallback = handler.getNextSearchFallback("ollama_web_search");
+        assertThat(fallback).isEqualTo("tavily");
+    }
+
+    @Test
+    void getNextSearchFallback_tavily_shouldReturnNull() {
+        // When: all search providers are down, fall back to local tools
+        String fallback = handler.getNextSearchFallback("tavily");
         assertThat(fallback).isNull();
     }
 
@@ -39,9 +51,9 @@ class McpClientErrorHandlerTest {
     // ---------- isMcpServerAvailable ----------
 
     @Test
-    void isMcpServerAvailable_shearxng_shouldNotThrow() {
+    void isMcpServerAvailable_firecrawl_shouldNotThrow() {
         // Just verify the method doesn't throw — actual availability depends on environment
-        boolean available = handler.isMcpServerAvailable("searxng");
+        boolean available = handler.isMcpServerAvailable("firecrawl");
         assertThat(available).isNotNull();
     }
 
@@ -65,7 +77,7 @@ class McpClientErrorHandlerTest {
         int initialTimeout = handler.getRequestTimeoutSeconds();
         assertThat(initialTimeout).isEqualTo(20);
 
-        handler.onMcpTimeout("searxng", "search");
+        handler.onMcpTimeout("firecrawl", "search");
         assertThat(handler.getRequestTimeoutSeconds()).isGreaterThan(initialTimeout);
     }
 
@@ -73,11 +85,11 @@ class McpClientErrorHandlerTest {
     void onMcpTimeout_shouldNotExceed60Seconds() {
         // Manually set timeout near the cap
         handler.setRequestTimeoutSeconds(55);
-        handler.onMcpTimeout("searxng", "search");
+        handler.onMcpTimeout("firecrawl", "search");
         assertThat(handler.getRequestTimeoutSeconds()).isEqualTo(65);
 
         handler.setRequestTimeoutSeconds(60);
-        handler.onMcpTimeout("searxng", "search");
+        handler.onMcpTimeout("firecrawl", "search");
         // Should not increase beyond 60
         assertThat(handler.getRequestTimeoutSeconds()).isEqualTo(60);
     }
@@ -85,9 +97,9 @@ class McpClientErrorHandlerTest {
     // ---------- onMcpServerStartupFailure ----------
 
     @Test
-    void onMcpServerStartupFailure_searxng_shouldLogFallbackInfo() {
+    void onMcpServerStartupFailure_firecrawl_shouldLogFallbackInfo() {
         // Just verify it doesn't throw
-        handler.onMcpServerStartupFailure("searxng", new RuntimeException("connection refused"));
+        handler.onMcpServerStartupFailure("firecrawl", new RuntimeException("connection refused"));
     }
 
     @Test
@@ -107,7 +119,7 @@ class McpClientErrorHandlerTest {
         String summary = handler.getMcpServerStatusSummary();
         assertThat(summary).contains("=== MCP Server Status ===");
         assertThat(summary).contains("ollama_web_search:");
-        assertThat(summary).contains("searxng:");
+        assertThat(summary).contains("firecrawl:");
         boolean hasAvailableOrUnavailable = summary.contains("AVAILABLE") || summary.contains("UNAVAILABLE");
         assertThat(hasAvailableOrUnavailable).isTrue();
     }
@@ -118,12 +130,12 @@ class McpClientErrorHandlerTest {
     void onMcpInvalidResponse_shouldLogTruncatedResponse() {
         // Just verify it doesn't throw for very long responses
         String longResponse = "x".repeat(500);
-        handler.onMcpInvalidResponse("searxng", "search", longResponse);
+        handler.onMcpInvalidResponse("firecrawl", "search", longResponse);
     }
 
     @Test
     void onMcpInvalidResponse_shouldLogFullShortResponse() {
         String shortResponse = "bad json";
-        handler.onMcpInvalidResponse("searxng", "search", shortResponse);
+        handler.onMcpInvalidResponse("firecrawl", "search", shortResponse);
     }
 }

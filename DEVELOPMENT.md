@@ -44,7 +44,7 @@ All configuration is in `src/main/resources/application.yml`. Key settings:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `spring.ai.openai.base-url` | `http://localhost:1234` | Ollama endpoint (no `/v1` suffix) |
-| `spring.ai.openai.chat.options.model` | `gemma-4-26b-a4b-it-qat` | LLM model name |
+| `spring.ai.openai.chat.options.model` | `google/gemma-4-26b-a4b-qat` | LLM model name |
 | `spring.datasource.url` | `jdbc:postgresql://localhost:5432/research-agent` | Database connection |
 | `spring.jpa.hibernate.ddl-auto` | `validate` | Schema validation only (no auto-modification) |
 | `spring.ai.sse.timeout` | `600000` ms | SSE emitter timeout (10 min) |

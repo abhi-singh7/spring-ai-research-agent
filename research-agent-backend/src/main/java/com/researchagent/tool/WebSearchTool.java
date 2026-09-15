@@ -31,9 +31,9 @@ import java.util.regex.Pattern;
 /**
  * Search tool exposed to the LLM.
  *
- * <p>Executes the router's ordered backend chain IN ONE CALL: tries SearXNG first, then DuckDuckGo (an
- * independent engine), then Ollama Web Search (hosted API), then Tavily (hosted search API) — moving on
- * whenever a backend errors or returns no results. The returned text is always DECISIVE — either formatted
+ * <p>Executes the router's ordered backend chain IN ONE CALL: tries Firecrawl first (self-hosted API,
+ * POST /v2/search), then DuckDuckGo (an independent engine), then Ollama Web Search (hosted API), then
+ * Tavily (hosted search API) — moving on whenever a backend errors or returns no results. The returned text is always DECISIVE — either formatted
  * results from the first successful backend, or an explicit "no results from any backend" verdict listing
  * per-backend reasons — so the LLM never has to (or wants to) retry the same dead search method in a loop.</p>
  */
@@ -56,7 +56,7 @@ public class WebSearchTool {
             "class=\"result__snippet\"[^>]*>(.*?)</span>", Pattern.DOTALL);
 
     private final McpToolRouter router;
-    private final String searxngBaseUrl;
+    private final String firecrawlBaseUrl;
     private final String ddgBaseUrl;
     private final String ollamaBaseUrl;
     private final String ollamaApiKey;
@@ -65,19 +65,20 @@ public class WebSearchTool {
 
     @Autowired
     public WebSearchTool(McpToolRouter router,
+                          @Value("${app.search.firecrawl-base-url:http://localhost:3002}") String firecrawlBaseUrl,
                           @Value("${app.search.ollama-base-url:https://ollama.com}") String ollamaBaseUrl,
                           @Value("${app.search.ollama-api-key:}") String ollamaApiKey,
                           @Value("${app.search.tavily-api-key:}") String tavilyApiKey) {
-        this(router, "http://localhost:9090", "https://duckduckgo.com", ollamaBaseUrl, ollamaApiKey,
+        this(router, firecrawlBaseUrl, "https://duckduckgo.com", ollamaBaseUrl, ollamaApiKey,
                 "https://api.tavily.com", tavilyApiKey);
     }
 
     /** Package-private constructor for tests — endpoints overridable so no real network is needed. */
-    WebSearchTool(McpToolRouter router, String searxngBaseUrl, String ddgBaseUrl,
+    WebSearchTool(McpToolRouter router, String firecrawlBaseUrl, String ddgBaseUrl,
                   String ollamaBaseUrl, String ollamaApiKey,
                   String tavilyBaseUrl, String tavilyApiKey) {
         this.router = router;
-        this.searxngBaseUrl = searxngBaseUrl;
+        this.firecrawlBaseUrl = firecrawlBaseUrl;
         this.ddgBaseUrl = ddgBaseUrl;
         this.ollamaBaseUrl = ollamaBaseUrl;
         this.ollamaApiKey = (ollamaApiKey == null || ollamaApiKey.isBlank()) ? "" : ollamaApiKey.strip();
@@ -94,7 +95,7 @@ public class WebSearchTool {
     /**
      * MAIN TOOL ENTRYPOINT (LLM calls this). Tries every backend in the routed chain until one yields results.
      */
-    @Tool(description = "Search the web for information using intelligent routing across multiple search engines (SearXNG → DuckDuckGo → Ollama → Tavily).")
+    @Tool(description = "Search the web for information using intelligent routing across multiple search engines (Firecrawl → DuckDuckGo → Ollama → Tavily).")
     public String search(
             @ToolParam(required = true, description = "Search query") String query,
             @ToolParam(required = false, description = "Task type: latest-information, general-search, search-fallback") String taskType
@@ -111,7 +112,7 @@ public class WebSearchTool {
             for (String backend : backends) {
                 SearchOutcome outcome;
                 switch (backend) {
-                    case "searxng" -> outcome = searchViaSearxng(query);
+                    case "firecrawl" -> outcome = searchViaFirecrawl(query);
                     case "ddg", "duckduckgo" -> outcome = searchViaDuckDuckGo(query);
                     case "ollama_web_search", "ollama" -> outcome = searchViaOllamaWebSearch(query);
                     case "tavily" -> outcome = searchViaTavily(query);
@@ -160,20 +161,23 @@ public class WebSearchTool {
     }
 
     /**
-     * SEARXNG — local SearXNG instance, JSON format. The preferred engine per the routing chain.
+     * FIRECRAWL — self-hosted Firecrawl API (POST {base}/v2/search). The preferred engine per the routing
+     * chain. Request body: {"query": ..., "limit": N}; response shape:
+     * {"success": true, "data": {"web": [{"url", "title", "description"}, ...]}}.
      */
-    private SearchOutcome searchViaSearxng(String query) {
+    private SearchOutcome searchViaFirecrawl(String query) {
         try {
-            String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8);
+            ObjectMapper mapper = new ObjectMapper();
+            String body = mapper.writeValueAsString(Map.of("query", query, "limit", MAX_RESULTS));
 
-            HttpURLConnection conn = openGet(searxngBaseUrl + "/search?q=" + encoded + "&format=json");
+            HttpURLConnection conn = openJsonPost(firecrawlBaseUrl + "/v2/search", null, body);
             int status = conn.getResponseCode();
             if (status / 100 != 2) {
-                return SearchOutcome.fail("HTTP " + status);
+                return SearchOutcome.fail("HTTP " + status + ": " + readHttpError(conn));
             }
 
             String rawResponse = read(conn);
-            return parseSearXngJson(rawResponse);
+            return parseFirecrawlJson(rawResponse);
 
         } catch (Exception e) {
             return SearchOutcome.fail(e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -181,8 +185,8 @@ public class WebSearchTool {
     }
 
     /**
-     * OLLAMA WEB SEARCH — Ollama's hosted web_search API ({base}/api/web_search), the final escalation target
-     * after SearXNG and DuckDuckGo both fail or are rate-limited. Requires a Bearer token (OLLAMA_API_KEY);
+     * OLLAMA WEB SEARCH — Ollama's hosted web_search API ({base}/api/web_search), the third escalation target
+     * after Firecrawl and DuckDuckGo both fail or are rate-limited. Requires a Bearer token (OLLAMA_API_KEY);
      * without one it degrades to an explicit reason instead of touching the network.
      */
     private SearchOutcome searchViaOllamaWebSearch(String query) {
@@ -210,7 +214,7 @@ public class WebSearchTool {
     }
 
     /**
-     * DUCKDUCKGO — HTML endpoint, an independent index used when SearXNG yields nothing. No API key required.
+     * DUCKDUCKGO — HTML endpoint, an independent index used when Firecrawl yields nothing. No API key required.
      */
     private SearchOutcome searchViaDuckDuckGo(String query) {
         try {
@@ -240,7 +244,7 @@ public class WebSearchTool {
     }
 
     /**
-     * TAVILY — Tavily Search API ({base}/search), the final escalation target after SearXNG, DuckDuckGo and
+     * TAVILY — Tavily Search API ({base}/search), the final escalation target after Firecrawl, DuckDuckGo and
      * Ollama Web Search all fail or are rate-limited. Requires a Bearer token (TAVILY_API_KEY); without one it
      * degrades to an explicit reason instead of touching the network.
      */
@@ -374,9 +378,11 @@ public class WebSearchTool {
     }
 
     /**
-     * Parse SearXNG JSON response into structured text for the LLM.
+     * Parse a Firecrawl v2/search response into structured text for the LLM. Expected shape:
+     * {"success": true, "data": {"web": [{"url", "title", "description"}, ...]}} — a {@code success: false}
+     * payload (or missing/empty web array) is treated as a backend failure so the chain escalates.
      */
-    private SearchOutcome parseSearXngJson(String rawResponse) {
+    private SearchOutcome parseFirecrawlJson(String rawResponse) {
         if (rawResponse == null || rawResponse.isBlank()) {
             return SearchOutcome.fail("empty response");
         }
@@ -385,15 +391,13 @@ public class WebSearchTool {
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(rawResponse);
 
-            // SearXNG JSON format: top-level "results" array (or nested under "results")
-            JsonNode results = null;
-            if (root.has("results")) {
-                results = root.get("results");
-            } else if (root.isArray()) {
-                results = root;
+            if (root.has("success") && !root.get("success").asBoolean(true)) {
+                String error = root.path("error").asText(root.path("detail").asText("unknown error"));
+                return SearchOutcome.fail("API reported failure: " + error);
             }
 
-            if (results == null || !results.isArray() || results.isEmpty()) {
+            JsonNode results = root.path("data").path("web");
+            if (!results.isArray() || results.isEmpty()) {
                 return SearchOutcome.fail("returned no results");
             }
 
@@ -401,15 +405,16 @@ public class WebSearchTool {
             int idx = 0;
             for (JsonNode result : results) {
                 if (idx >= MAX_RESULTS) break;
-                String title = extractTitle(result);
-                String url = extractUrl(result);
-                String snippet = extractSnippet(result);
+                String title = result.path("title").asText("");
+                String url = result.path("url").asText("");
+                String snippet = result.path("description").asText(
+                        result.path("content").asText(result.path("snippet").asText("")));
 
                 lines.add((idx + 1) + ". " + title);
-                if (url != null && !url.isBlank()) {
+                if (!url.isBlank()) {
                     lines.add("   URL: " + url);
                 }
-                if (snippet != null && !snippet.isBlank()) {
+                if (!snippet.isBlank()) {
                     lines.add("   Snippet: " + snippet);
                 }
                 idx++;
@@ -423,7 +428,7 @@ public class WebSearchTool {
             if (trimmed.isEmpty() || !looksLikeResults(trimmed)) {
                 return SearchOutcome.fail("unparseable JSON");
             }
-            return SearchOutcome.ok("SearXNG raw response:\n" + trimmed);
+            return SearchOutcome.ok("Firecrawl raw response:\n" + trimmed);
         }
     }
 
@@ -433,39 +438,10 @@ public class WebSearchTool {
         return lower.contains("url") || lower.contains("http") || lower.contains("\"results\"");
     }
 
-    private String extractTitle(JsonNode result) {
-        if (result.has("title")) {
-            return result.get("title").asText();
-        }
-        return "";
-    }
-
-    private String extractUrl(JsonNode result) {
-        if (result.has("url")) {
-            return result.get("url").asText();
-        }
-        // Try alternate field names used by SearXNG engines
-        if (result.has("link") || result.has("href")) {
-            return result.has("link") ? result.get("link").asText() : result.get("href").asText();
-        }
-        return "";
-    }
-
-    private String extractSnippet(JsonNode result) {
-        // SearXNG JSON format uses "content" for snippet, some engines use "excerpt" or "description"
-        if (result.has("content")) {
-            return result.get("content").asText();
-        }
-        if (result.has("snippet") || result.has("excerpt") || result.has("description")) {
-            String key = result.has("snippet") ? "snippet" : result.has("excerpt") ? "excerpt" : "description";
-            return result.get(key).asText();
-        }
-        return "";
-    }
-
     /**
-     * Open a JSON POST connection with bounded timeouts and an Authorization header; writes the body before
-     * returning so callers can inspect the response status directly.
+     * Open a JSON POST connection with bounded timeouts and an optional Authorization header; writes the body
+     * before returning so callers can inspect the response status directly. A null/blank authorization header
+     * is omitted (self-hosted Firecrawl needs no auth).
      */
     private HttpURLConnection openJsonPost(String url, String authorizationHeader, String jsonBody) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
