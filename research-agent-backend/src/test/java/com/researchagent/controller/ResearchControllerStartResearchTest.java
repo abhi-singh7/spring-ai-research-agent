@@ -1,6 +1,6 @@
 package com.researchagent.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;

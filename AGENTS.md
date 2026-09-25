@@ -27,6 +27,7 @@ npm start                     # proxy.conf.json forwards /api → localhost:8080
 
 ## Key Implementation Gotchas
 
+- **Spring AI 2.0 OpenAI client timeouts**: the 2.0 rewrite uses the official `openai-java` SDK, whose auto-config defaults `spring.ai.openai.timeout` to **60s** (call/read/write). Long local-LLM calls (final report generation) die at exactly 60s with `OpenAIIoException: Stream failed` / `InterruptedIOException: timeout`. Set `spring.ai.openai.timeout: PT10M` in application.yml, kept in sync with `spring.ai.sse.timeout`.
 - **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact (NOT `spring-ai-openai-spring-boot-starter`). Config classes are auto-configured — no bean definitions needed. See ChatClientConfig.java.
 - **Search backend routing**: Search backends are executed by `WebSearchTool` over HTTP in ONE tool call: `firecrawl → ddg → ollama_web_search → tavily` (see `McpToolRouter.resolveBackends`). Firecrawl is a self-hosted API (`app.search.firecrawl-base-url`, default `http://localhost:3002`) — NOT an MCP server. Two stdio MCP servers (`ollama_web_search`, `ddg_search`) are additionally auto-configured in application.yml; `UrlReaderTool` escalates to Firecrawl's `/v2/scrape` when Jsoup can't read a page.
 - **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.

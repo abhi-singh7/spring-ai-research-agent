@@ -2,13 +2,18 @@
 spring:
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:sk-lm-i3QQE3mA:UBjIG0O2s6HZOLVFLxvI}
-      base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
+      api-key: ${OPENAI_API_KEY:sk-unsloth-1e4d14a4ae3f85f3f0cd7dea79719cda}
+      base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:8888/v1}
+      # Spring AI 2.0's OpenAI client (openai-java SDK) defaults this to 60s, which kills
+      # long LLM calls (final report generation on a local model easily exceeds it):
+      # "OpenAIIoException: Stream failed" / InterruptedIOException: timeout at exactly 60s.
+      # Sets call/read/write timeouts; keep in sync with spring.ai.sse.timeout below.
+      timeout: 600s # a bug in spring-ai 2.0.0-beta.1 prevents this from being applied to the OpenAI client, so we also set directly in the openAI chatOptions bean
       chat:
-        options:
-          model: ${LLM_MODEL:google/gemma-4-26b-a4b-qat}
+          model: ${LLM_MODEL:Ornith-1.5-35B-A3B-GGUF:Q4_K_M}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
+          n: 1
     mcp:
       client:
         type: SYNC
@@ -66,7 +71,7 @@ app:
   research:
     default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
   cleanup:
-    stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
+    stale-after: PT45M   # PROCESSING sessions older than this are considered abandoned
     interval: PT20M     # Scheduler runs every 20 minutes (fixed rate)
   search:
     firecrawl-base-url: ${FIRECRAWL_BASE_URL:http://localhost:3002}   # self-hosted Firecrawl API — preferred search backend (POST /v2/search) and scrape fallback in UrlReaderTool (POST /v2/scrape)

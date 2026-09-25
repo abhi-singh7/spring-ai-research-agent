@@ -1,7 +1,7 @@
 package com.researchagent.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.researchagent.model.dto.FollowUpRequest;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.entity.ResearchSession;

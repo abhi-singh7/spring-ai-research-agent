@@ -42,10 +42,19 @@ export class ResearchService {
     if (!steps.length) return 0;
     const completedCount = steps.filter(s => s.status === 'COMPLETED').length;
     const inProgressCount = steps.filter(s => s.status === 'IN_PROGRESS').length;
-    
+
     // Each COMPLETED step = 1 point, each IN_PROGRESS step = 0.5 points (partial credit)
     const progressPoints = completedCount + (inProgressCount * 0.5);
-    return Math.round((progressPoints / steps.length) * 100);
+
+    // Once the breakdown step reports the planned sub-topic count, use the known final
+    // total (breakdown + N sub-topics + report) so the bar moves smoothly instead of
+    // jumping as new steps appear; otherwise fall back to the current step count.
+    const breakdown = steps.find(s => /^Topic broken down into \d+/.test(s.description ?? ''));
+    const expectedTotal = breakdown
+      ? Number(breakdown.description!.match(/^Topic broken down into (\d+)/)![1]) + 2
+      : steps.length;
+
+    return Math.min(100, Math.round((progressPoints / expectedTotal) * 100));
   });
 
   readonly activeStepIndex = computed(() => {
@@ -411,73 +420,100 @@ export class ResearchService {
   }
 
   // SSE Event Handlers (private)
+
+  /**
+   * Maps backend PROGRESS messages onto per-step UI state. The orchestrator emits, in order:
+   *   "Topic broken down into N sub-topics"
+   *   "Researching: <title> (round r/max)"      — once per research round of each sub-topic
+   *   "Completed research on: <title>"          — once per finished sub-topic
+   *   "Research on '<title>' failed after retries" — for a sub-topic that exhausted its retries
+   *   "Research complete!" / "Research cancelled by user"
+   *
+   * Each sub-topic gets its own list entry (IN_PROGRESS → COMPLETED/FAILED) and the round
+   * counter is shown in the step description, so the step list and progress bar track real work.
+   */
   private handleProgress(event: ResearchModels.ProgressSseEvent): void {
-    const steps = this.researchSteps();
-
-    if (!steps.length) {
-      // First progress event during sub-topic research — create dynamic step
-      this._researchStepsSignal.set([
-        {
-          stepNumber: 1,
-          name: 'Researching Sub-topics',
-          status: 'IN_PROGRESS' as ResearchModels.ResearchStep['status'],
-          description: typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload)
-        }
-      ]);
-      return;
-    }
-
-    // If session is already COMPLETED or FAILED (REPORT_DONE/ERROR arrived first), just update the last IN_PROGRESS step's description
-    const currentSession = this.researchSession();
-    if (currentSession && ['COMPLETED', 'FAILED'].includes(currentSession.status)) {
-      this._researchStepsSignal.update(prev => prev.map((s, i) => ({
-        ...s,
-        status: (i === Math.max(0, steps.length - 1) ? s.status : 'COMPLETED') as ResearchModels.ResearchStep['status'],
-        description: typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload)
-      })));
-      return;
-    }
-
     const payloadStr = typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload);
-    
-    // Check if this is a sub-topic completion notification ("Completed research on: X")
-    const isSubTopicCompletion = payloadStr.startsWith('Completed research on:') || payloadStr.startsWith('Research complete!');
+    console.log('[ResearchService] PROGRESS event received:', payloadStr, 'Current steps:', this.researchSteps());
 
-    if (isSubTopicCompletion) {
-      // Mark the current IN_PROGRESS step as COMPLETED and create new IN_PROGRESS step for the next sub-topic
-      const inProgressIdx = steps.findIndex(s => s.status === 'IN_PROGRESS');
-      this._researchStepsSignal.update(prev => prev.map((s, i) => ({
-        ...s,
-        status: (i === inProgressIdx ? 'COMPLETED' : s.status) as ResearchModels.ResearchStep['status']
-      })));
-
-      // Only create a new IN_PROGRESS step if there isn't one already (e.g., REPORT_START may have added "Generating Report")
-      const hasInProgress = steps.some(s => s.status === 'IN_PROGRESS');
-      if (!hasInProgress) {
-        const nextStepNumber = steps.length + 1;
-        this._researchStepsSignal.update(prev => [...prev, {
-          stepNumber: nextStepNumber,
-          name: payloadStr.replace('Completed research on:', 'Researching'),
-          status: 'IN_PROGRESS' as ResearchModels.ResearchStep['status'],
+    // Breakdown finished — ensure a completed Breakdown step exists. Steps may be empty (fresh live
+    // session) or already seeded from history after a page refresh mid-run.
+    if (payloadStr.startsWith('Topic broken down into')) {
+      if (this.researchSteps().length === 0) {
+        this._researchStepsSignal.set([{
+          stepNumber: 1,
+          name: 'Breakdown',
+          status: 'COMPLETED' as ResearchModels.ResearchStep['status'],
           description: payloadStr
         }]);
+      } else {
+        this._researchStepsSignal.update(prev => prev.map((s, i) =>
+          i === 0 ? { ...s, status: 'COMPLETED' as ResearchModels.ResearchStep['status'] } : s
+        ));
       }
-    } else if (steps.some(s => s.status === 'IN_PROGRESS')) {
-      // There's already an IN_PROGRESS step — just update it with the new description
-      const inProgressIdx = steps.findIndex(s => s.status === 'IN_PROGRESS');
-      this._researchStepsSignal.update(prev => prev.map((s, i) => ({
+      return;
+    }
+
+    // "Researching: <title> (round r/max)" — upsert the sub-topic's own step; round shown in description.
+    const researching = payloadStr.match(/^Researching:\s*(.+?)(?:\s*\(round (\d+)\/(\d+)\))?$/);
+    if (researching) {
+      const roundText = researching[2] ? `Round ${researching[2]} of ${researching[3]}` : '';
+      this.upsertSubTopicStep(researching[1].trim(), 'IN_PROGRESS', roundText || undefined);
+      return;
+    }
+
+    // "Completed research on: <title>"
+    if (payloadStr.startsWith('Completed research on:')) {
+      this.upsertSubTopicStep(payloadStr.slice('Completed research on:'.length).trim(), 'COMPLETED');
+      return;
+    }
+
+    // "Research on '<title>' failed after retries"
+    const failed = payloadStr.match(/^Research on '(.+)' failed/);
+    if (failed) {
+      this.upsertSubTopicStep(failed[1].trim(), 'FAILED', payloadStr);
+      return;
+    }
+
+    // "Research complete!" — everything is done; make sure no step is left spinning.
+    if (payloadStr.startsWith('Research complete!')) {
+      this._researchStepsSignal.update(prev => prev.map(s => ({
         ...s,
-        status: (i < inProgressIdx ? 'COMPLETED' : 'IN_PROGRESS') as ResearchModels.ResearchStep['status'],
-        description: payloadStr
+        status: 'COMPLETED' as ResearchModels.ResearchStep['status']
       })));
+      return;
+    }
+
+    // Fallback (e.g. "Research cancelled by user"): surface the message on the active step if any.
+    const steps = this.researchSteps();
+    const inProgressIdx = steps.findIndex(s => s.status === 'IN_PROGRESS');
+    if (inProgressIdx >= 0) {
+      this._researchStepsSignal.update(prev => prev.map((s, i) =>
+        i === inProgressIdx ? { ...s, description: payloadStr } : s
+      ));
+    } else if (!steps.length) {
+      this._researchStepsSignal.set([{
+        stepNumber: 1,
+        name: payloadStr,
+        status: 'COMPLETED' as ResearchModels.ResearchStep['status'],
+        description: payloadStr
+      }]);
+    }
+  }
+
+  /** Create or update the per-sub-topic step identified by its title (case-insensitive). */
+  private upsertSubTopicStep(title: string, status: ResearchModels.ResearchStep['status'], description?: string): void {
+    const steps = this.researchSteps();
+    const idx = steps.findIndex(s => s.name.trim().toLowerCase() === title.toLowerCase());
+    if (idx >= 0) {
+      this._researchStepsSignal.update(prev => prev.map((s, i) =>
+        i === idx ? { ...s, status, description: description ?? s.description } : s
+      ));
     } else {
-      // No IN_PROGRESS step yet — create one for this new sub-topic being researched
-      const idx = Math.max(0, steps.length - 1);
-      this._researchStepsSignal.update(prev => prev.map((s, i) => ({
-        ...s,
-        status: (i < idx ? 'COMPLETED' : 'IN_PROGRESS') as ResearchModels.ResearchStep['status'],
-        description: payloadStr
-      })));
+      this._researchStepsSignal.update(prev => [
+        ...prev,
+        { stepNumber: prev.length + 1, name: title, status, description: description ?? '' }
+      ]);
     }
   }
 

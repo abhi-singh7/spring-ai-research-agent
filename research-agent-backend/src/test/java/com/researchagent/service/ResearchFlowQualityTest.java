@@ -4,7 +4,7 @@ import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.repository.ResearchSessionRepository;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;

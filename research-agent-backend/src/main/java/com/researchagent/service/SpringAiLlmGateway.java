@@ -2,8 +2,11 @@ package com.researchagent.service;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.DefaultChatOptions;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
+
+import java.time.Duration;
 
 /**
  * Spring AI implementation of {@link LlmGateway}.
@@ -57,9 +60,9 @@ public class SpringAiLlmGateway implements LlmGateway {
                 .content();
     }
 
-    private DefaultChatOptions temperatureOptions(Double temperature) {
-        var options = new DefaultChatOptions();
-        options.setTemperature(temperature);
-        return options;
+    private OpenAiChatOptions.Builder temperatureOptions(Double temperature) {
+       return OpenAiChatOptions.builder()
+               .timeout(Duration.ofSeconds(1200))
+                .temperature(temperature);
     }
 }
