@@ -1,11 +1,13 @@
 package com.researchagent.model.entity;
 
+
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.researchagent.model.enums.ResearchStatus;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
-import org.hibernate.annotations.GenericGenerator;
+import org.hibernate.annotations.UuidGenerator;
+
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -18,8 +20,7 @@ import java.util.UUID;
 public class ResearchSession {
 
     @Id
-    @GeneratedValue(generator = "UUID")
-    @GenericGenerator(name = "UUID", strategy = "org.hibernate.id.UUIDGenerator")
+    @UuidGenerator(style = UuidGenerator.Style.RANDOM)
     private UUID id;
 
     @Column(nullable = false, length = 1024)

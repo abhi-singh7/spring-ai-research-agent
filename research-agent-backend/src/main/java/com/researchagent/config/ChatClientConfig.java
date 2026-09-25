@@ -1,6 +1,6 @@
 package com.researchagent.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.researchagent.tool.McpToolRouter;
 import com.researchagent.tool.UrlReaderTool;
 import com.researchagent.tool.WebSearchTool;
