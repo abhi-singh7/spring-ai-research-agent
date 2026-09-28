@@ -2,73 +2,82 @@
 
 ## Overview
 
-The backend uses PostgreSQL with JPA entities and a single migration file (no Flyway). The schema consists of two tables: `research_session` (top-level) and `research_step` (child, cascading delete).
+The backend uses **MongoDB** (migrated from PostgreSQL). All data lives in a single collection, `research_session`, where each session document **embeds its steps** as an array. There is no separate step collection, no foreign keys, and no schema migration tooling — collections and indexes are created automatically by Spring Data MongoDB from the entity annotations.
 
----
-
-## Database Schema
-
-### Migration File
-
-**Location**: `src/main/resources/db/migration/V1__init_research_tables.sql`
-
-This is the only migration file. There is no Flyway (or any auto-migration) in use — schema validation relies on JPA entities matching the existing tables via `ddl-auto: validate`, which checks that the entities match the database without auto-creating or modifying anything.
-
-**Note**: Database must be created manually before first run:
-```bash
-createdb -U postgres research-agent
-```
-
-### `research_session` Table
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Unique session identifier |
-| `topic` | VARCHAR(1024) | NOT NULL | User's original research query |
-| `status` | VARCHAR(32) | NOT NULL, DEFAULT 'PENDING' | Current session state |
-| `prompt` | TEXT | (nullable) | System prompt used for this session |
-| `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Session creation timestamp |
-| `updated_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Last update timestamp |
-| `completed_at` | TIMESTAMP WITH TIME ZONE | (nullable) | Completion/failure timestamp |
-| `final_report` | TEXT | (nullable) | Synthesized research report content |
-
-**Indexes:**
-- `idx_research_session_status` on `(status)` — for filtering by status in history queries
-- `idx_research_session_created` on `(created_at DESC)` — for ordering history results
-
-### `research_step` Table
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Unique step identifier |
-| `session_id` | UUID | NOT NULL, FK → research_session(id) ON DELETE CASCADE | Parent session reference |
-| `order_index` | INTEGER | NOT NULL — unique within a session (with session_id) | Step ordinal position |
-| `type` | VARCHAR(32) | NOT NULL | Type of step being executed |
-| `content` | TEXT | (nullable) | Step output content (may be null if step failed before producing content) |
-| `status` | VARCHAR(32) | NOT NULL, DEFAULT 'PENDING' | Current step state |
-| `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Step creation timestamp |
-
-**Indexes:**
-- Unique constraint on `(session_id, order_index)` — ensures step ordering within a session
-- `idx_research_step_session` on `(session_id)` — for fetching all steps of a session
-
----
-
-## Hibernate Configuration Notes
-
-From `application.yml`:
+Connection settings (`src/main/resources/application.yml`):
 
 ```yaml
-spring.jpa.hibernate.ddl-auto: validate       # Schema validation only — no auto-modification
-spring.jpa.properties.hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
-spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation: true  # Avoids PostgreSQL LOB API error in auto-commit mode
+# NOTE: Spring Boot 4 moved Mongo properties from spring.data.mongodb.* to spring.mongodb.*
+spring.mongodb.uri: mongodb://localhost:27017/research-agent
+# UUIDs are stored in the standard (RFC 4122) BSON representation. The one-shot migration script
+# (scripts/migrate_pg_to_mongo.py) writes _id values with the same representation — keep them in sync.
+spring.mongodb.representation.uuid: STANDARD
 ```
 
-The `hibernate.jdbc.lob.non_contextual_creation` setting is critical — it instructs Hibernate to stream LOB content instead of using PostgreSQL's OID-based Large Object API, preventing the "Large Objects may not be used in auto-commit mode" error that occurs with TEXT columns during JPA operations.
+- The `research-agent` database is created automatically on first write — no manual setup needed.
+- **UUID representation matters**: both the application and the migration script must agree on `STANDARD` (RFC 4122). If one changes, change both or lookups will silently fail.
+- Tests use a dedicated database (`mongodb://localhost:27017/research-agent-test`) so repeated runs never touch production data; integration tests clean their collections in `@BeforeEach`.
 
 ---
 
-## Enum Mappings (Entity → Database)
+## Document Schema
+
+### `research_session` collection
+
+One document per research session (entity: `ResearchSession`, `@Document(collection = "research_session")`).
+
+| Field | BSON Type | Description |
+|-------|-----------|-------------|
+| `_id` | UUID (STANDARD) | Unique session identifier — generated by the app (`UUID.randomUUID()`) |
+| `topic` | string | User's original research query |
+| `status` | string | Current session state (`ResearchStatus` enum name, default `PENDING`) |
+| `prompt` | string (nullable) | System prompt used for this session |
+| `steps` | array of embedded documents | Full step list (see below), ordered by `orderIndex` |
+| `finalReport` | string (nullable) | Synthesized research report content |
+| `createdAt` | date | Session creation timestamp (set by the orchestrator) |
+| `updatedAt` | date (nullable) | Last update timestamp |
+| `completedAt` | date (nullable) | Completion/failure/cancellation timestamp |
+
+**Indexes (auto-created from annotations):**
+- Compound index `status_createdAt` on `{ status: 1, createdAt: -1 }` (`@CompoundIndex`) — covers status filtering and history ordering in one query
+- Single-field index on `createdAt` (`@Indexed`)
+
+### Embedded `steps` array
+
+Each element is a `ResearchStep` sub-document (no `_id` at the collection level — it carries its own app-generated UUID):
+
+| Field | BSON Type | Description |
+|-------|-----------|-------------|
+| `id` | UUID (STANDARD) | Unique step identifier — generated by the app |
+| `orderIndex` | int | Step ordinal position within the session (sequential as steps are appended) |
+| `type` | string | Step type (`StepType` enum name) |
+| `content` | string (nullable) | Step output content (may be null if the step failed before producing content) |
+| `status` | string | Step state: `PENDING`/`RUNNING`/`COMPLETED`/`FAILED` (raw string, default `PENDING`) |
+| `createdAt` | date | Step creation timestamp |
+
+**Document shape:**
+
+```json
+{
+  "_id": "…uuid…",
+  "topic": "…",
+  "status": "PROCESSING",
+  "prompt": "…",
+  "steps": [
+    { "id": "…uuid…", "orderIndex": 0, "type": "BREAKDOWN", "content": "…", "status": "COMPLETED", "createdAt": "…" }
+  ],
+  "finalReport": null,
+  "createdAt": "…",
+  "updatedAt": "…",
+  "completedAt": null
+}
+```
+
+**Why embedded?** Every `save()` is a single atomic document replace that writes the session together with its full step list. There is no lazy loading, no N+1 fetching, and no cascade/orphan-removal configuration — deleting a session deletes its steps automatically because they are part of the same document.
+
+---
+
+## Enum Mappings (Entity → Document)
 
 ### `ResearchStatus` Entity Enum
 
@@ -91,48 +100,44 @@ The `hibernate.jdbc.lob.non_contextual_creation` setting is critical — it inst
 | `SYNTHESIS` | Finding synthesis | Phase 3 |
 | `FINAL_REPORT` | Final report generation | Phase 3 |
 
-**Note on step status values:** The database stores raw strings ("PENDING"/"RUNNING"/"COMPLETED"/"FAILED") which are inconsistent with the `ResearchStatus` enum used elsewhere (which uses "PROCESSING" not "RUNNING"). The entity's default value `"PENDING"` is a hardcoded string rather than an enum constant.
+**Note on step status values:** The document stores raw strings ("PENDING"/"RUNNING"/"COMPLETED"/"FAILED") which are inconsistent with the `ResearchStatus` enum used elsewhere (which uses "PROCESSING" not "RUNNING"). The entity's default value `"PENDING"` is a hardcoded string rather than an enum constant.
 
 ---
 
-## JPA Relationships
+## Repository Access
 
-```mermaid
-erDiagram
-    RESEARCH_SESSION ||--o{ RESEARCH_STEP : has
-    RESEARCH_SESSION {
-        UUID id PK
-        VARCHAR topic
-        VARCHAR status
-        TEXT prompt
-        TIMESTAMP created_at
-        TIMESTAMP updated_at
-        TIMESTAMP completed_at
-        TEXT final_report
-    }
-    RESEARCH_STEP {
-        UUID id PK
-        UUID session_id FK
-        INTEGER order_index
-        VARCHAR type
-        TEXT content
-        VARCHAR status
-        TIMESTAMP created_at
-    }
-```
-
-- **CascadeType.ALL, orphanRemoval=true** on the `ResearchSession.steps` collection — deleting a session cascades to all steps.
-- **LAZY fetch** on `ResearchStep.session` — step entities don't load the parent unless explicitly accessed.
-- `findByIdWithSteps(UUID)` in the repository eagerly loads the steps collection to avoid N+1 queries when returning sessions with their full history.
+- `ResearchSessionRepository extends MongoRepository<ResearchSession, UUID>` — standard CRUD plus derived queries:
+  - `findByIdWithSteps(UUID)` — plain `findById` alias (steps are embedded, so a find already returns the full aggregate); kept for call-site compatibility with the old JPA fetch-join method of the same name
+  - `findAllByOrderByCreatedAtDesc(Pageable)` — paginated history
+  - `findByTopicContainingIgnoreCase(String, Pageable)` — topic search
+  - `findAllByStatusAndCreatedAtBefore(ResearchStatus, LocalDateTime)` — abandoned-session lookup for the cleanup scheduler (derived by Spring Data MongoDB into a criteria query)
+- `ResearchSessionRepositoryCustom` / `...CustomImpl` — repository fragment using `MongoTemplate` for what derived queries can't express:
+  - `markCancelledIfProcessing(UUID, LocalDateTime, String)` — conditional `updateFirst()` that transitions a session to CANCELLED **only if it is still PROCESSING**. The "no clobber" rule holds at the database level: documents already in a terminal state are left untouched. Returns the matched count (0 = another writer reached a terminal state first).
 
 ---
 
-## Cleanup Scheduler Query
+## Migration from PostgreSQL
 
-The `AbandonedSessionCleanupService` uses this custom query:
+The one-shot migration script `scripts/migrate_pg_to_mongo.py` copies legacy data from PostgreSQL (read-only) into MongoDB, embedding steps per session:
 
-```java
-List<ResearchSession> findAllByStatusAndCreatedAtBefore(ResearchStatus status, LocalDateTime cutoff);
+| PostgreSQL | MongoDB |
+|------------|---------|
+| `research_session.id` | `_id` (BSON UUID, STANDARD) |
+| `topic`, `status`, `prompt` | same names |
+| `final_report` | `finalReport` |
+| `created_at` / `updated_at` / `completed_at` | `createdAt` / `updatedAt` / `completedAt` (normalized to UTC) |
+| `research_step.id` | `steps[].id` (BSON UUID, STANDARD) |
+| `order_index`, `type`, `content`, `status`, `created_at` | `steps[].orderIndex`, `steps[].type`, `steps[].content`, `steps[].status`, `steps[].createdAt` |
+
+```bash
+cd scripts
+pip install -r requirements.txt
+python migrate_pg_to_mongo.py --dry-run          # report what would be migrated
+python migrate_pg_to_mongo.py                    # run the migration + verify
+python migrate_pg_to_mongo.py --skip-existing    # never touch docs already in Mongo
 ```
 
-Spring Data JPA derives this from the method name — finds all sessions where `status = PROCESSING` AND `created_at < cutoff`. Results are iterated and each is updated to `CANCELLED` with a save.
+- Idempotent: documents are upserted by `_id`, so re-running after an interruption converges to the same state. It never writes to PostgreSQL.
+- Steps are embedded sorted by `orderIndex`, matching the Spring Data Mongo entities exactly.
+
+**Rollback path:** PostgreSQL is retained untouched. The original schema DDL remains at `src/main/resources/db/migration/V1__init_research_tables.sql` (two tables: `research_session` + `research_step` with FK cascade). No migration runner (Flyway) is in use — the file is reference-only.

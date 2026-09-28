@@ -6,9 +6,9 @@ A full-stack AI-powered research tool: submit a topic → LLM breaks it into sub
 
 | Layer | Technology |
 |-------|-----------|
-| **Backend** | Java 21 + Spring Boot 3.5.4 + Spring AI 1.1.7 (OpenAI-compatible local LLM) — `research-agent-backend/` |
+| **Backend** | Java 21 + Spring Boot 4.1.1 + Spring AI 2.0.1 (OpenAI-compatible local LLM) — `research-agent-backend/` |
 | **Frontend** | Angular 18+ with Signals/RxJS + Angular Material M3 — `research-agent-ui/` |
-| **Database** | PostgreSQL |
+| **Database** | MongoDB (single `research_session` collection, steps embedded in the session document) |
 | **LLM** | Ollama (OpenAI-compatible endpoint, e.g., gemma-4-26b-a4b-qat) |
 | **Search Tools** | Self-hosted Firecrawl API (search + scrape) + MCP stdio servers: ollama_web_search, ddg_search + local fallback tools |
 
@@ -22,15 +22,15 @@ Research-Agent/
 │   │   ├── controller/              # ResearchController, ResearchStreamController
 │   │   ├── model/
 │   │   │   ├── dto/                 # Request/Response DTOs (ResearchRequest, StepDTO, etc.)
-│   │   │   ├── entity/              # JPA entities (ResearchSession, ResearchStep)
+│   │   │   ├── entity/              # Mongo documents (ResearchSession with embedded ResearchStep)
 │   │   │   └── enums/               # ResearchStatus, StepType
-│   │   ├── repository/              # Spring Data JPA repositories
+│   │   ├── repository/              # Spring Data MongoDB repository + custom fragment
 │   │   ├── service/                 # Core business logic (orchestrator, streaming, cleanup, follow-up)
 │   │   ├── tool/                    # MCP tool router + local tools (WebSearchTool, UrlReaderTool)
 │   │   └── ResearchAgentApplication.java
 │   ├── src/main/resources/
-│   │   ├── application.yml          # LLM config, datasource, MCP servers, SSE timeout
-│   │   └── db/migration/V1__init_research_tables.sql
+│   │   ├── application.yml          # LLM config, MongoDB URI, MCP servers, SSE timeout
+│   │   └── db/migration/V1__init_research_tables.sql   # legacy PostgreSQL schema (rollback path only)
 │   └── docs/                        # Backend documentation (ARCHITECTURE, API, MODELS, CONFIGURATION)
 ├── research-agent-ui/               # Angular application
 │   ├── src/app/
@@ -48,6 +48,7 @@ Research-Agent/
 │   │   └── app.config.ts                     # App providers (Router, HttpClient, Markdown)
 │   ├── proxy.conf.json                       # Dev server proxy: /api → localhost:8080
 │   └── docs/                                 # Frontend documentation
+├── scripts/                                     # migrate_pg_to_mongo.py — one-shot PG→Mongo data migration
 ├── AGENTS.md                                    # AI agent guidance for this repo
 ├── CLAUDE.md                                    # Claude Code specific guidance
 └── openspec/changes/                            # OpenSpec change tracking (feature proposals)
@@ -59,7 +60,7 @@ Research-Agent/
 
 - **Java 21** (OpenJDK recommended)
 - **Node.js 20+** with npm
-- **PostgreSQL 15+** — create database: `createdb -U postgres research-agent`
+- **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent` — the database is created automatically)
 - **Ollama** running locally — e.g., a model like `gemma-4-26b` available at `http://localhost:1234`
 
 ### Backend
@@ -85,7 +86,7 @@ npx ng serve --proxy-config proxy.conf.json    # Starts on port 4200, proxies /a
 graph TD
     User["Browser (port 4200)"] -->|"REST + SSE"| Backend["Spring Boot (port 8080)"]
     Backend -->|"OpenAI-compatible HTTP API"| Ollama["Ollama LLM (port 1234)"]
-    Backend -->|"JDBC"| Postgres["PostgreSQL (research-agent DB)"]
+    Backend -->|"MongoDB driver"| Mongo["MongoDB (research-agent DB, port 27017)"]
     Backend -->|"HTTP /v2/search + /v2/scrape"| Firecrawl["Firecrawl API (port 3002)"]
     Backend -->|"MCP stdio"| WebSearch["ollama_web_search MCP server"]
     Backend -->|"MCP stdio"| DDG["ddg_search MCP server"]
@@ -101,13 +102,13 @@ See [Backend ARCHITECTURE](research-agent-backend/docs/ARCHITECTURE.md) and [Fro
 
 ## Key Implementation Notes
 
-- **Spring AI 1.1.7** uses `spring-ai-starter-model-openai` artifact (NOT the old milestone name). Config classes are auto-configured — no bean definitions needed.
+- **Spring AI 2.0** uses `spring-ai-starter-model-openai` artifact (NOT the old milestone name). Config classes are auto-configured — no bean definitions needed.
 - **Search Backend Routing**: Search backends run over HTTP inside ONE `WebSearchTool` call: `firecrawl → ddg → ollama_web_search → tavily` (routed by `McpToolRouter`). Firecrawl is a self-hosted API (`app.search.firecrawl-base-url`, default `http://localhost:3002`) — not an MCP server. Two stdio MCP servers (`ollama_web_search`, `ddg_search`) are additionally configured in `application.yml`; `UrlReaderTool` escalates to Firecrawl's `/v2/scrape` when Jsoup can't read a page.
 - **Angular standalone components**: All `@Component` decorators must include `standalone: true` when using the `imports` property.
 - **Angular Material M3 theming**: Use `mat.define-theme((color: ()))`. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — cannot be called at root level.
 - **SSE streaming**: Backend uses `Flux<String>` via `.stream().content()`; frontend detects connection loss with exponential backoff reconnection and falls back to polling on failure. A stall timer (90s) forces completion detection if no chunks arrive during report generation.
 - **Abandoned session cleanup**: Background scheduler marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`).
-- **PostgreSQL DDL-auto: `validate`** — no automatic schema generation. Schema is defined in `db/migration/V1__init_research_tables.sql`.
+- **MongoDB storage (migrated from PostgreSQL)**: sessions live in a single `research_session` collection with steps embedded — no schema migrations needed (collections/indexes are auto-created). UUIDs use the STANDARD BSON representation; the one-shot PG→Mongo data migration lives in `scripts/migrate_pg_to_mongo.py`. The legacy PG schema (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path.
 
 ## Documentation Index
 

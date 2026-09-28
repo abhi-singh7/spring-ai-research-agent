@@ -49,23 +49,11 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Spring Data JPA + PostgreSQL -->
+        <!-- Spring Data MongoDB (PostgreSQL is retained untouched as a rollback path) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
-
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
-        <!-- Flyway -->
-<!--        <dependency>-->
-<!--            <groupId>org.flywaydb</groupId>-->
-<!--            <artifactId>flyway-core</artifactId>-->
-<!--        </dependency>-->
 
         <!-- Spring AI OpenAI (for local LLM via Ollama/OpenAI-compatible API) -->
         <dependency>
@@ -104,11 +92,10 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- H2 in-memory database for testing with PostgreSQL compatibility mode -->
+        <!-- MVC test slice (@WebMvcTest / @AutoConfigureMockMvc) — moved to its own artifact in Spring Boot 4 -->
         <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <version>2.4.240</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
 

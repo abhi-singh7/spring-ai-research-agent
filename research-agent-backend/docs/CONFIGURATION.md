@@ -12,7 +12,7 @@ This document covers all configuration files and their purposes in the Spring Bo
 
 - Java 21 (OpenJDK recommended)
 - Maven 3.x+ for building
-- PostgreSQL database (`research-agent` database must be created manually)
+- MongoDB running locally (database `research-agent` is created automatically at `mongodb://localhost:27017/research-agent`)
 - Ollama or compatible LLM endpoint (for AI functionality)
 
 ### Starting the Application
@@ -90,34 +90,18 @@ app:
 - **firecrawl-base-url**: Base URL of the self-hosted Firecrawl API. `WebSearchTool` calls `POST {base}/v2/search` (body `{"query": ..., "limit": N}`; response `{"success": true, "data": {"web": [{url, title, description}]}}`) as the FIRST backend in every routing chain. `UrlReaderTool` calls `POST {base}/v2/scrape` (body `{"url": ..., "formats": ["markdown"]}`) as a fallback when Jsoup can't read a page.
 - **Search escalation chain** (executed in ONE `WebSearchTool` call, per `McpToolRouter`): `firecrawl → ddg → ollama_web_search → tavily`. Empty/missing keys degrade to an explicit "not configured" reason instead of a network call.
 
-#### Datasource Configuration
+#### MongoDB Configuration
 
 ```yaml
-spring.datasource.url: jdbc:postgresql://localhost:5432/research-agent
-spring.datasource.username: ${DB_USERNAME:postgres}
-spring.datasource.password: ${DB_PASSWORD:postgres}
-spring.datasource.driver-class-name: org.postgresql.Driver
+# NOTE: Spring Boot 4 moved Mongo properties from spring.data.mongodb.* to spring.mongodb.*
+spring.mongodb.uri: mongodb://localhost:27017/research-agent
+spring.mongodb.representation.uuid: STANDARD
 ```
 
-- **url**: PostgreSQL JDBC connection string pointing to local database `research-agent` on port 5432. The database must be created manually before first startup — Flyway does not create databases, only manages schema migrations within an existing database.
-- **username/password**: Read from environment variables with default fallback to `postgres`.
+- **uri**: Connection string for the local MongoDB. The `research-agent` database and the `research_session` collection are created automatically — no manual setup or schema migration needed (collections/indexes come from entity annotations).
+- **representation.uuid**: Stores UUIDs in the standard (RFC 4122) BSON representation. It must stay in sync with the one-shot migration script `scripts/migrate_pg_to_mongo.py` — if they diverge, lookups silently fail.
 
-**Note:** Database creation command:
-```bash
-createdb -U postgres research-agent
-```
-
-#### JPA Configuration
-
-```yaml
-spring.jpa.hibernate.ddl-auto: validate          # Schema validation only — no auto-modification
-spring.jpa.properties.hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
-spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation: true  # Avoids PostgreSQL LOB error in auto-commit mode
-```
-
-- **ddl-auto=validate**: Strictest mode — validates that the schema matches entity definitions on startup. Will fail to start if there are mismatches but will not modify the database in any way. Use `update` during development only.
-- **hibernate.dialect**: Specifies Hibernate's PostgreSQL dialect for type mapping and SQL generation.
-- **hibernate.jdbc.lob.non_contextual_creation=true**: Critical setting — instructs Hibernate to stream LOB content instead of using PostgreSQL's OID-based Large Object API, preventing the "Large Objects may not be used in auto-commit mode" error with TEXT columns.
+**Note:** The legacy PostgreSQL schema (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path; no JPA/Hibernate configuration remains in the application.
 
 #### SSE Timeout Configuration
 
@@ -144,29 +128,28 @@ Configures Spring's default task executor pool sizes for async research processi
 ```yaml
 app:
   cleanup:
-    stale-after: PT15M   # PROCESSING sessions older than this are considered abandoned
-    interval: PT2M      # Scheduler runs at this fixed rate (default documented as PT30M in code)
+    stale-after: PT45M   # PROCESSING sessions older than this are considered abandoned
+    interval: PT20M      # Scheduler runs at this fixed rate
 ```
 
-- **stale-after**: Duration after which a stuck PROCESSING session is marked CANCELLED by the cleanup scheduler. Default `PT15M` = 15 minutes.
-- **interval**: Fixed-rate interval for the cleanup task. Default `PT2M` per YAML, but the code's fallback is `PT30M`. The actual runtime value depends on which takes precedence in Spring's property resolution.
+- **stale-after**: Duration after which a stuck PROCESSING session is marked CANCELLED by the cleanup scheduler. Default `PT45M` = 45 minutes.
+- **interval**: Fixed-rate interval for the cleanup task. Default `PT20M` = every 20 minutes.
 
 ---
 
 ### `pom.xml` — Maven Dependencies
 
-#### Core Dependencies (Spring Boot 3.5.4 + Spring AI 1.1.7)
+#### Core Dependencies (Spring Boot 4.1.1 + Spring AI 2.0.1)
 
 | Dependency | Purpose |
 |-----------|---------|
-| `spring-boot-starter-parent:3.5.4` | Spring Boot project parent (dependency management, plugin conventions) |
-| `spring-ai-bom:1.1.7` | Spring AI BOM — all Spring AI artifacts use this for consistent versions |
+| `spring-boot-starter-parent:4.1.1` | Spring Boot project parent (dependency management, plugin conventions) |
+| `spring-ai-bom:2.0.1` | Spring AI BOM — all Spring AI artifacts use this for consistent versions |
 | `spring-ai-starter-model-openai` | Auto-configures OpenAI-compatible chat model client from application.yml properties |
 | `spring-ai-starter-mcp-client-webflux` | MCP client with WebFlux-based transport (recommended for production streaming) |
 | `spring-boot-starter-webflux` | Reactive/WebFlux support required for SSE streaming endpoints |
 | `spring-boot-starter-web` | REST web server support (Tomcat embedded, Spring MVC) |
-| `spring-boot-starter-data-jpa` | JPA data access via Spring Data JPA |
-| `postgresql` | PostgreSQL JDBC driver (runtime scope) |
+| `spring-boot-starter-data-mongodb` | MongoDB data access via Spring Data MongoDB (replaces the former JPA starter + PostgreSQL driver) |
 | `spring-boot-starter-validation` | Bean validation (@NotBlank, @Min annotations) |
 
 #### Development Dependencies
@@ -176,9 +159,9 @@ app:
 | `jsoup:1.20.1` | Compile | HTML content extraction for `UrlReaderTool` — used by MCP fallback tool |
 | `lombok` | Provided | Annotation processor for @Data, @SlfJ4 (compile-time only) |
 | `spring-boot-starter-test` | Test | JUnit 5, Mockito, Spring Test support |
-| `h2:2.4.240` | Test | In-memory database with PostgreSQL compatibility mode for tests |
+| `spring-boot-webmvc-test` | Test | MVC test slice (`@WebMvcTest`) — split into its own artifact in Spring Boot 4 |
 
-**Note:** Flyway dependency is **commented out** in pom.xml (`<!-- <dependency> ... </dependency> -->`). Schema management relies on JPA entity validation only; the migration SQL file exists but is not actively used by a Flyway runner.
+**Note:** No schema migration tooling is in use. The legacy PostgreSQL DDL file (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path; MongoDB collections/indexes are auto-created from entity annotations.
 
 ---
 
@@ -186,8 +169,6 @@ app:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DB_USERNAME` | No | postgres | PostgreSQL username for database connection |
-| `DB_PASSWORD` | No | postgres | PostgreSQL password for database connection |
 | `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local Ollama accepts any value. |
 | `OLLAMA_BASE_URL` | No | http://localhost:1234 | Base URL for OpenAI-compatible REST API (Ollama by default) |
 | `LLM_MODEL` | No | google/gemma-4-26b-a4b-qat | Model name — should match locally available Ollama model tag |
@@ -202,17 +183,18 @@ app:
 | File | Purpose | Category |
 |------|---------|----------|
 | `pom.xml` | Maven project config, dependencies, BOM management | Configuration |
-| `src/main/resources/application.yml` | Spring Boot: datasource, JPA, AI/LLM, MCP servers, task executor, SSE timeout, cleanup scheduler | Configuration |
+| `src/main/resources/application.yml` | Spring Boot: MongoDB URI, AI/LLM, MCP servers, task executor, SSE timeout, cleanup scheduler | Configuration |
 | `src/main/java/com/researchagent/config/ChatClientConfig.java` | ChatClient bean (auto-configured by Spring AI from properties) | Config class |
 | `src/main/java/com/researchagent/config/AsyncConfig.java` | Named ThreadPoolTaskExecutor bean for research processing | Config class |
 | `src/main/java/com/researchagent/config/WebConfig.java` | CORS configuration for Angular dev server origins | Config class |
-| `src/main/resources/db/migration/V1__init_research_tables.sql` | Schema DDL for both tables (exists but Flyway runner is disabled) | Migration |
+| `src/main/resources/db/migration/V1__init_research_tables.sql` | Legacy PostgreSQL schema DDL — retained untouched as a rollback path (not used at runtime) | Migration |
+| `scripts/migrate_pg_to_mongo.py` | One-shot PG→Mongo data migration (idempotent, read-only against PostgreSQL) | Migration |
 
 ---
 
-## Spring AI 1.1.x Notes
+## Spring AI 2.0 Notes
 
-The application uses **Spring AI 1.1.7** — a stable release well past GA. Key configuration patterns:
+The application uses **Spring AI 2.0.1**. Key configuration patterns:
 
 ### Artifact Names
 - `spring-ai-starter-model-openai` — auto-configures OpenAI-compatible chat client from properties (no manual bean definitions needed)

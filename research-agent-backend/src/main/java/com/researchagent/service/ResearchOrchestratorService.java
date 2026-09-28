@@ -1,9 +1,10 @@
 package com.researchagent.service;
 
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import com.researchagent.model.dto.FollowUpRequest;
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.dto.ResearchRoundNote;
+import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
@@ -12,9 +13,9 @@ import com.researchagent.repository.ResearchSessionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.data.domain.Page;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
@@ -78,10 +79,14 @@ public class ResearchOrchestratorService {
      * Create a ResearchSession synchronously and kick off the async research process.
      */
     public ResearchSession createAndStart(ResearchRequest request) {
-        // 1. Create and persist the session synchronously (cascade will save steps too)
+        // Create and persist the session synchronously. Steps are embedded in the document, so later
+        // saves write the whole session (session + steps) as one atomic replace.
         ResearchSession session = new ResearchSession();
         session.setTopic(request.getTopic());
         session.setStatus(ResearchStatus.PROCESSING);
+        LocalDateTime now = LocalDateTime.now();
+        session.setCreatedAt(now);
+        session.setUpdatedAt(now);
 
         sessionRepo.save(session);
 
@@ -105,18 +110,11 @@ public class ResearchOrchestratorService {
             5. If a search returns "No results from any backend", do NOT retry that query or close variants — the tool
                has already escalated through every available engine; continue with the information you have instead.
 
-            Then write your research note in this EXACT format:
+            Then report your research note with exactly these three parts — nothing else:
 
-            ## Findings
-            - Specific, factual key findings as bullet points; attribute important claims inline like (source: <domain>).
-
-            ## Sources Consulted
-            - Source title — https://full/url/one        (one line per page you ACTUALLY read; list at least 3)
-
-            ## Open Questions
-            - Gaps, conflicts or follow-up searches that remain. Write "None" if coverage is complete.
-
-            Do not include any other sections or text outside this format.
+            1. Findings — specific, factual key findings as bullet points; attribute important claims inline like (source: <domain>).
+            2. Sources Consulted — one entry per page you ACTUALLY read, formatted "- Title — https://full/url" (list at least 3).
+            3. Open Questions — gaps, conflicts or follow-up searches that remain. Write "None" if coverage is complete.
             """;
 
     private static final String RESEARCH_FOLLOWUP_PROMPT = """
@@ -128,19 +126,12 @@ public class ResearchOrchestratorService {
             conflicting claims. Do not repeat findings already covered. If a search returns "No results from any
             backend", do NOT retry that query — accept the gap and state it under Open Questions instead.
 
-            Output only the NEW content, still using this EXACT format:
+            Output only the NEW content, still with exactly these three parts — nothing else:
 
-            ## Findings
-            - New key findings as bullet points; attribute important claims inline like (source: <domain>).
-
-            ## Sources Consulted
-            - Source title — https://full/url/one        (only pages you ACTUALLY read in THIS round)
-
-            ## Open Questions
-            - Remaining gaps after this round. Write "None" if coverage is now complete.
-
-            If you cannot find new information, state that clearly under ## Findings instead of repeating old content.
-            Do not include any other sections or text outside this format.
+            1. Findings — new key findings as bullet points; attribute important claims inline like (source: <domain>).
+               If you cannot find new information, state that clearly here instead of repeating old content.
+            2. Sources Consulted — one entry per page you ACTUALLY read in THIS round, formatted "- Title — https://full/url".
+            3. Open Questions — remaining gaps after this round. Write "None" if coverage is now complete.
             """;
 
     private static final String SYNTHESIS_PROMPT = """
@@ -190,10 +181,10 @@ public class ResearchOrchestratorService {
         ResearchCancellationRegistry.CancellationHandle handle = cancellationRegistry.register(sessionId);
         boolean reportStreamStarted = false;
         try {
-            // Fetch session with steps FETCH-JOINed: this method runs on a pool thread (and later streaming
-            // callbacks run on Reactor threads), so there is NO ambient Hibernate session/OSIV. The lazy `steps`
-            // bag must be initialized up front; afterwards addStep()/save() operate on the in-memory collection
-            // and each save() opens its own short transaction.
+            // Load the session document: steps are EMBEDDED, so a single find returns the whole aggregate.
+            // This method runs on a pool thread (and later streaming callbacks run on Reactor threads)
+            // with no persistence context at all — each save() is one atomic document replace that
+            // writes the session together with its current step list.
             session = sessionRepo.findByIdWithSteps(sessionId);
             if (session == null) {
                 log.error("Session {} not found for async processing", sessionId);
@@ -217,9 +208,8 @@ public class ResearchOrchestratorService {
             PlanResult plan = planBreakdown(handle, sessionId, request.getTopic(), subTopicCount);
 
             // Save BREAKDOWN step and persist immediately so REST API returns real-time progress.
-            // NOTE: always adopt the merged instance returned by save(). Step ids are DB-generated, so our
-            // local child objects keep id=null after a merge; re-merging that stale graph later would make
-            // Hibernate re-insert already-persisted steps (duplicate key on uq_session_order).
+            // With embedded steps there is no JPA merge/duplicate-key hazard — save() replaces the whole
+            // document; the returned instance is still adopted below for consistency.
             ResearchStep breakdownStep = saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", plan.record());
             session.addStep(breakdownStep);
             streamService.sendProgress(sessionId, "Topic broken down into " + plan.topics().size() + " sub-topics");
@@ -237,21 +227,21 @@ public class ResearchOrchestratorService {
                 try {
                     handle.ensureActive(); // checkpoint before each sub-topic round batch
                     ResearchRoundResult roundResult = researchOneSubTopic(handle, sessionId, subTopic, maxRounds);
-                    findingsBlocks.add(buildFindingBlock(i + 1, subTopic.getTitle(), "COMPLETED", roundResult.note()));
+                    findingsBlocks.add(buildFindingBlock(i + 1, subTopic.title(), "COMPLETED", roundResult.note()));
                     aggregatedSources.putAll(roundResult.sourcesByUrl());
 
                     ResearchStep subtopicStep = saveStep(session, i + 1, StepType.SUBTOPIC, "COMPLETED", roundResult.note());
                     session.addStep(subtopicStep);
-                    streamService.sendProgress(sessionId, "Completed research on: " + subTopic.getTitle());
+                    streamService.sendProgress(sessionId, "Completed research on: " + subTopic.title());
                 } catch (ResearchCancelledException e) {
                     throw e; // user cancellation is not a sub-topic failure — stop the whole run
                 } catch (Exception e) {
                     log.error("Sub-topic research failed for '{}' on session {} after retries: {}",
-                            subTopic.getTitle(), sessionId, e.getMessage(), e);
+                            subTopic.title(), sessionId, e.getMessage(), e);
                     ResearchStep failedStep = saveStep(session, i + 1, StepType.SUBTOPIC, "FAILED", null);
                     session.addStep(failedStep);
-                    streamService.sendProgress(sessionId, "Research on '" + subTopic.getTitle() + "' failed after retries");
-                    failedSubTopics.add(subTopic.getTitle());
+                    streamService.sendProgress(sessionId, "Research on '" + subTopic.title() + "' failed after retries");
+                    failedSubTopics.add(subTopic.title());
                 }
                 session = persistChecked(handle, session); // Persist each SUBTOPIC step incrementally (adopt merged instance — see note above)
             }
@@ -263,7 +253,7 @@ public class ResearchOrchestratorService {
                 if (ownsSessionState(sessionId)) {
                     session.fail(reason);
                     try {
-                        session = sessionRepo.save(session); // persist FAILED status (was silently lost before)
+                        session = persist(session); // persist FAILED status (was silently lost before)
                     } catch (Exception persistError) {
                         log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
                     }
@@ -293,7 +283,7 @@ public class ResearchOrchestratorService {
                     session.fail(e.getMessage());
                     // Next free order index — the BREAKDOWN step at index 0 is already persisted in most failure paths
                     session.addStep(saveStep(session, session.getSteps().size(), StepType.BREAKDOWN, "FAILED", e.getMessage()));
-                    sessionRepo.save(session); // Cascade saves steps too (no further saves after this point)
+                    persist(session); // embedded steps are written with the document (no further saves after this point)
                 } catch (Exception persistError) {
                     log.error("Failed to persist failure state for session {}", sessionId, persistError);
                 }
@@ -311,6 +301,9 @@ public class ResearchOrchestratorService {
 
     // ==================== STEP 1: BREAKDOWN PLANNING ====================
 
+    /** Structured-output target for the breakdown stage: a JSON array of sub-topics. */
+    private static final ParameterizedTypeReference<List<SubTopic>> SUBTOPIC_LIST_TYPE = new ParameterizedTypeReference<>() {};
+
     private PlanResult planBreakdown(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, String topic, int count) {
         String system = """
                 You are an expert research planner for a web-research agent.
@@ -322,61 +315,45 @@ public class ResearchOrchestratorService {
                 - Titles must be concise (3–10 words); descriptions explain what to investigate (1–3 sentences).
                 - Cover foundational concepts and advanced/practical aspects when appropriate; prioritise the most important dimensions for broad topics, split narrow topics into logical investigative components.
                 - For each sub-topic provide 2–4 CONCRETE web search queries that a search engine would return good pages for: specific keyword phrases (not full questions), varying in focus so they surface different sources together.
-
-                Output rules:
-                - Return ONLY a valid JSON array — no markdown code fences, no explanations, no extra text.
-                - Each element matches the schema: {"id": number, "title": string, "description": string, "searchQueries": [string]}
                 """.formatted(count, count);
 
-        String response = llmCallWithRetry(handle, system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING);
-        List<SubTopic> topics = parseSubTopics(response);
-
-        if (topics.isEmpty()) {
-            // Semantic retry: the model produced text that is not valid JSON — tell it exactly what was wrong.
-            log.warn("Breakdown response for session {} was not valid JSON — retrying with a corrective prompt. Raw: {}",
-                    sessionId, truncateForLog(response));
-            String correctiveUser = ("Your previous response could not be parsed as the required JSON array.\n"
-                    + "Previous output:\n" + truncateForLog(response)
-                    + "\n\nRespond AGAIN with ONLY the JSON array — no markdown fences, no explanations.");
-            response = llmCallWithRetry(handle, system, correctiveUser, TEMP_PLANNING);
-            topics = parseSubTopics(response);
+        List<SubTopic> topics;
+        try {
+            // Spring AI appends the JSON schema for List<SubTopic> to this prompt and parses the answer into it —
+            // no hand-rolled "return only JSON" parsing on our side.
+            topics = llmStructuredCallWithRetry(handle, system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING, SUBTOPIC_LIST_TYPE);
+        } catch (RuntimeException e) {
+            log.error("Breakdown failed after retries for session {}: {}", sessionId, e.getMessage());
+            // Last resort: a single broad research pass over the whole topic.
+            return new PlanResult(List.of(new SubTopic(1, topic, "", List.of())), "");
         }
 
+        topics = normalizePlan(topics);
         if (!topics.isEmpty()) {
             return new PlanResult(topics, normalizePlanJson(topic, topics));
         }
 
-        // Last resort: a single broad research pass over the whole topic.
-        log.error("Breakdown unparseable after retry for session {} — falling back to a single generic sub-topic", sessionId);
-        String raw = response != null ? response : "";
-        return new PlanResult(List.of(new SubTopic(1, topic, raw)), raw);
+        log.error("Breakdown contained no usable sub-topics for session {} — falling back to a single generic sub-topic", sessionId);
+        return new PlanResult(List.of(new SubTopic(1, topic, "", List.of())), "");
     }
 
-    private List<SubTopic> parseSubTopics(String rawResponse) {
-        if (rawResponse == null || rawResponse.isBlank()) {
+    /** Drop entries without titles, renumber missing ids and default blank descriptions. */
+    private List<SubTopic> normalizePlan(List<SubTopic> parsed) {
+        if (parsed == null || parsed.isEmpty()) {
             return List.of();
         }
-        String jsonContent = extractJsonFromMarkdown(rawResponse);
-        try {
-            List<SubTopic> parsed = objectMapper.readValue(jsonContent, new TypeReference<List<SubTopic>>() {
-            });
-            List<SubTopic> valid = parsed.stream()
-                    .filter(st -> st.getTitle() != null && !st.getTitle().isBlank())
-                    .toList();
-            for (int i = 0; i < valid.size(); i++) {
-                SubTopic st = valid.get(i);
-                if (st.getId() == 0) {
-                    st.setId(i + 1);
-                }
-                if (st.getDescription() == null || st.getDescription().isBlank()) {
-                    st.setDescription("");
-                }
+        List<SubTopic> valid = new ArrayList<>();
+        int position = 0;
+        for (SubTopic st : parsed) {
+            if (st == null || st.title() == null || st.title().isBlank()) {
+                continue;
             }
-            return new ArrayList<>(valid);
-        } catch (Exception e) {
-            log.error("Failed to parse sub-topic breakdown: {}", jsonContent, e);
-            return List.of();
+            position++;
+            String description = st.description() != null ? st.description() : "";
+            List<String> queries = st.searchQueries() != null ? st.searchQueries() : List.of();
+            valid.add(new SubTopic(st.id() > 0 ? st.id() : position, st.title().trim(), description, queries));
         }
+        return valid;
     }
 
     private String normalizePlanJson(String topic, List<SubTopic> topics) {
@@ -386,7 +363,7 @@ public class ResearchOrchestratorService {
             plan.put("subTopics", topics);
             return objectMapper.writeValueAsString(plan);
         } catch (Exception e) {
-            return topics.stream().map(SubTopic::getTitle).collect(java.util.stream.Collectors.joining(", "));
+            return topics.stream().map(SubTopic::title).collect(java.util.stream.Collectors.joining(", "));
         }
     }
 
@@ -401,21 +378,21 @@ public class ResearchOrchestratorService {
             handle.ensureActive(); // checkpoint before each research round
             streamService.sendProgress(sessionId,
                     maxRounds > 1
-                            ? "Researching: " + subTopic.getTitle() + " (round " + round + "/" + maxRounds + ")"
-                            : "Researching: " + subTopic.getTitle());
+                            ? "Researching: " + subTopic.title() + " (round " + round + "/" + maxRounds + ")"
+                            : "Researching: " + subTopic.title());
 
             String system = round == 1 ? RESEARCH_ROUND_PROMPT : RESEARCH_FOLLOWUP_PROMPT;
             String user = buildRoundUserMessage(subTopic, note.toString(), sourcesByUrl);
 
             int urlsBefore = sourcesByUrl.size();
-            String response = llmCallWithRetry(handle, system, user, TEMP_RESEARCH); // throws after final attempt (or on cancel)
+            String roundText = researchRoundText(handle, subTopic, round, system, user); // throws after final attempt (or on cancel)
 
             if (note.length() > 0) {
-                note.append("\n\n").append(response.trim());
+                note.append("\n\n").append(roundText);
             } else {
-                note.append(response.trim());
+                note.append(roundText);
             }
-            collectSourceInfo(response, sourcesByUrl);
+            collectSourceInfo(roundText, sourcesByUrl);
             boolean newEvidence = sourcesByUrl.size() > urlsBefore;
 
             // Early stop: coverage looks sufficient (distinct URLs + substantive notes).
@@ -424,14 +401,14 @@ public class ResearchOrchestratorService {
             }
             // A round after the first that produced no new evidence is very unlikely to help — stop.
             if (!newEvidence && round >= 2) {
-                log.info("No new sources captured in round {} for sub-topic '{}'; stopping early", round, subTopic.getTitle());
+                log.info("No new sources captured in round {} for sub-topic '{}'; stopping early", round, subTopic.title());
                 break;
             }
         }
 
         if (sourcesByUrl.isEmpty()) {
             // Research ran without capturing any page URLs — likely parametric knowledge only.
-            log.warn("Sub-topic '{}' produced no source URLs during research; findings may be unverified", subTopic.getTitle());
+            log.warn("Sub-topic '{}' produced no source URLs during research; findings may be unverified", subTopic.title());
         }
 
         return new ResearchRoundResult(note.toString(), sourcesByUrl);
@@ -443,16 +420,16 @@ public class ResearchOrchestratorService {
 
     private String buildRoundUserMessage(SubTopic subTopic, String currentNote, LinkedHashMap<String, String> sourcesByUrl) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Sub-topic: ").append(subTopic.getTitle()).append("\n");
-        if (subTopic.getDescription() != null && !subTopic.getDescription().isBlank()) {
-            sb.append("Description: ").append(subTopic.getDescription()).append("\n");
+        sb.append("Sub-topic: ").append(subTopic.title()).append("\n");
+        if (subTopic.description() != null && !subTopic.description().isBlank()) {
+            sb.append("Description: ").append(subTopic.description()).append("\n");
         }
 
         if (currentNote.isEmpty()) {
             sb.append("\nPlanned search queries — run ALL of these, plus useful variants:\n");
-            List<String> queries = subTopic.getSearchQueries() != null && !subTopic.getSearchQueries().isEmpty()
-                    ? subTopic.getSearchQueries()
-                    : List.of(subTopic.getTitle());
+            List<String> queries = subTopic.searchQueries() != null && !subTopic.searchQueries().isEmpty()
+                    ? subTopic.searchQueries()
+                    : List.of(subTopic.title());
             for (String q : queries) {
                 sb.append("- ").append(q).append("\n");
             }
@@ -592,7 +569,7 @@ public class ResearchOrchestratorService {
                                     session.setFinalReport(fullReport);
                                     session.complete();
                                     session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
-                                    sessionRepo.save(session); // Cascade saves steps too
+                                    persist(session); // embedded steps are written with the document
 
                                     // Send final REPORT_DONE event with the complete report
                                     streamService.sendReportDone(sessionId, fullReport);
@@ -605,7 +582,7 @@ public class ResearchOrchestratorService {
                                 try {
                                     if (ownsSessionState(sessionId)) {
                                         session.fail("Failed to persist final report: " + callbackError.getMessage());
-                                        sessionRepo.save(session);
+                                        persist(session);
                                     }
                                 } catch (Exception ignore) {
                                     // nothing else we can do on this thread
@@ -624,36 +601,122 @@ public class ResearchOrchestratorService {
     // ==================== LLM RETRIES & HELPERS ====================
 
     /**
-     * Run an LLM completion with bounded retries: 1 initial attempt + 2 retries with growing backoff.
-     * Throws IllegalStateException once all attempts are exhausted so callers can decide how to degrade.
+     * One research round's note text, with bounded retries: the first attempt asks for STRUCTURED output
+     * (Spring AI appends the JSON schema for {@link ResearchRoundNote} and parses the answer into it);
+     * subsequent attempts fall back to a free-form note that the text parsing downstream still handles.
+     * The total attempt budget stays {@link #MAX_LLM_ATTEMPTS}. Throws IllegalStateException once all
+     * attempts are exhausted so callers can decide how to degrade.
      */
-    private String llmCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, String systemPrompt, String userMessage, Double temperature) {
+    private String researchRoundText(ResearchCancellationRegistry.CancellationHandle handle, SubTopic subTopic, int round,
+                                     String systemPrompt, String userMessage) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
             handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
             try {
-                return llmGateway.complete(systemPrompt, userMessage, temperature);
+                if (attempt == 1) {
+                    return renderRoundNote(llmGateway.completeStructured(systemPrompt, userMessage, TEMP_RESEARCH, ResearchRoundNote.class));
+                }
+                return llmGateway.complete(systemPrompt, userMessage, TEMP_RESEARCH).trim();
             } catch (RuntimeException e) {
                 last = e;
-                log.warn("LLM call attempt {}/{} failed: {}", attempt, MAX_LLM_ATTEMPTS, e.getMessage());
+                log.warn("Research round {} attempt {}/{} failed for sub-topic '{}': {}",
+                        round, attempt, MAX_LLM_ATTEMPTS, subTopic.title(), e.getMessage());
+                if (attempt == 1) {
+                    log.warn("Falling back to free-form notes for the remaining attempts");
+                }
                 if (attempt < MAX_LLM_ATTEMPTS) {
-                    try {
-                        Thread.sleep(RETRY_BACKOFF_MILLIS * attempt);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new IllegalStateException("Interrupted while retrying LLM call", ie);
-                    }
+                    sleepWithBackoff(attempt);
                 }
             }
         }
-        throw new IllegalStateException("LLM call failed after " + MAX_LLM_ATTEMPTS + " attempts", last);
+        throw new IllegalStateException("Research round failed after " + MAX_LLM_ATTEMPTS + " attempts", last);
     }
 
-    private String truncateForLog(String s) {
-        if (s == null) {
-            return "";
+    /**
+     * Run a structured-output completion with bounded retries: 1 initial attempt + 2 retries with growing backoff.
+     * Throws IllegalStateException once all attempts are exhausted so callers can decide how to degrade.
+     */
+    private <T> T llmStructuredCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, String systemPrompt,
+                                             String userMessage, Double temperature, ParameterizedTypeReference<T> type) {
+        Exception last = null;
+        for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
+            handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
+            try {
+                return llmGateway.completeStructured(systemPrompt, userMessage, temperature, type);
+            } catch (RuntimeException e) {
+                last = e;
+                log.warn("Structured LLM call attempt {}/{} failed: {}", attempt, MAX_LLM_ATTEMPTS, e.getMessage());
+                if (attempt < MAX_LLM_ATTEMPTS) {
+                    sleepWithBackoff(attempt);
+                }
+            }
         }
-        return s.length() > 2000 ? s.substring(0, 2000) + "…" : s;
+        throw new IllegalStateException("Structured LLM call failed after " + MAX_LLM_ATTEMPTS + " attempts", last);
+    }
+
+    private void sleepWithBackoff(int attempt) {
+        try {
+            Thread.sleep(RETRY_BACKOFF_MILLIS * attempt);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while retrying LLM call", ie);
+        }
+    }
+
+    /**
+     * Render a structured round note back to the markdown shape used for step content, follow-up rounds and
+     * synthesis input ("## Findings" / "## Sources Consulted" / "## Open Questions").
+     */
+    private String renderRoundNote(ResearchRoundNote note) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("## Findings\n");
+        boolean anyFinding = false;
+        if (note != null && note.findings() != null) {
+            for (String finding : note.findings()) {
+                if (finding == null || finding.isBlank()) {
+                    continue;
+                }
+                sb.append("- ").append(finding.trim()).append("\n");
+                anyFinding = true;
+            }
+        }
+        if (!anyFinding) {
+            sb.append("- No findings reported this round.\n");
+        }
+
+        sb.append("\n## Sources Consulted\n");
+        boolean anySource = false;
+        if (note != null && note.sourcesConsulted() != null) {
+            for (ResearchRoundNote.SourceRef source : note.sourcesConsulted()) {
+                if (source == null || source.url() == null || source.url().isBlank()) {
+                    continue;
+                }
+                String title = source.title() != null && !source.title().isBlank() ? source.title().trim() : "";
+                sb.append("- ").append(title.isEmpty() ? source.url().trim() : title + " — " + source.url().trim()).append("\n");
+                anySource = true;
+            }
+        }
+        if (!anySource) {
+            sb.append("- none\n");
+        }
+
+        sb.append("\n## Open Questions\n");
+        boolean anyQuestion = false;
+        if (note != null && note.openQuestions() != null) {
+            for (String question : note.openQuestions()) {
+                if (question == null || question.isBlank() || "none".equalsIgnoreCase(question.trim())) {
+                    continue;
+                }
+                sb.append("- ").append(question.trim()).append("\n");
+                anyQuestion = true;
+            }
+        }
+        if (!anyQuestion) {
+            sb.append("- None\n");
+        }
+
+        return sb.toString();
     }
 
     /** Breakdown stage result: planned sub-topics plus a record string for the BREAKDOWN step. */
@@ -665,9 +728,8 @@ public class ResearchOrchestratorService {
     }
 
     /**
-     * Get a research session by ID (with eager fetch of steps).
+     * Get a research session by ID. Steps are embedded in the document, so they are always present.
      */
-    @Transactional(readOnly = true)
     public ResearchSession getResearch(UUID sessionId) {
         return sessionRepo.findByIdWithSteps(sessionId);
     }
@@ -679,8 +741,8 @@ public class ResearchOrchestratorService {
      * <ol>
      *   <li>Signal the in-flight pipeline — cooperative checkpoints stop any further sub-topic rounds / LLM calls,
      *       and the active report-stream subscription (if streaming) is disposed, cancelling its upstream request.</li>
-     *   <li>Persist CANCELLED immediately with an atomic conditional UPDATE that only applies while the row is still
-     *       PROCESSING, so a run that has just completed/failed is never clobbered.</li>
+     *   <li>Persist CANCELLED immediately with an atomic conditional update that only applies while the document is
+     *       still PROCESSING, so a run that has just completed/failed is never clobbered.</li>
      *   <li>Emit the progress SSE event so connected clients see the cancelled state (also picked up by polling).</li>
      * </ol>
      */
@@ -704,10 +766,18 @@ public class ResearchOrchestratorService {
 
     /**
      * Incremental persist during a run — checks the cancellation flag first so a cancelled run never writes its stale
-     * PROCESSING row over CANCELLED (an in-flight save would otherwise revert the status field via merge semantics).
+     * PROCESSING state over CANCELLED.
      */
     private ResearchSession persistChecked(ResearchCancellationRegistry.CancellationHandle handle, ResearchSession session) {
         handle.ensureActive(); // throws ResearchCancelledException if a user cancelled
+        return persist(session);
+    }
+
+    /**
+     * Save the session document (session + embedded steps atomically), refreshing updatedAt.
+     */
+    private ResearchSession persist(ResearchSession session) {
+        session.setUpdatedAt(LocalDateTime.now());
         return sessionRepo.save(session);
     }
 
@@ -742,15 +812,9 @@ public class ResearchOrchestratorService {
     /**
      * Get historical research sessions with pagination.
      */
-    @Transactional(readOnly = true)
     public Page<ResearchSession> getHistoricalSessions(java.util.function.Predicate<ResearchSession> filter,
                                                        org.springframework.data.domain.PageRequest pageable) {
-        // Ensure this repository read executes inside a Spring-managed transaction so JDBC
-        // connections have autocommit disabled while LOBs are accessed. This helps avoid
-        // "Large Objects may not be used in auto-commit mode" when a driver/DB returns
-        // Clob instances that rely on the PostgreSQL Large Object API.
-        Page<ResearchSession> allByOrderByCreatedAtDesc = sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
-        return allByOrderByCreatedAtDesc;
+        return sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
     }
 
     /**
@@ -800,43 +864,12 @@ public class ResearchOrchestratorService {
         step.setType(type);
         step.setStatus(status);
         step.setContent(content);
+        step.setCreatedAt(LocalDateTime.now());
         return step;
     }
 
     /**
-     * Extract JSON content from LLM responses that wrap it in markdown code fences.
-     * Handles cases where the LLM adds explanatory text before/after the fence.
-     */
-    private String extractJsonFromMarkdown(String content) {
-        if (content == null) {
-            return "";
-        }
-
-        Pattern pattern = Pattern.compile(
-                "```(?:\\w+)?\\s*(.*?)\\s*```",
-                Pattern.DOTALL);
-
-        Matcher matcher = pattern.matcher(content);
-
-        if (matcher.find()) {
-            String candidate = matcher.group(1).trim();
-
-            if (!candidate.isEmpty() &&
-                    (candidate.startsWith("{") || candidate.startsWith("["))) {
-                return candidate;
-            }
-        }
-
-        // Fallback
-        String trimmed = content.trim();
-        trimmed = trimmed.replaceFirst("^```\\w*\\s*", "");
-        trimmed = trimmed.replaceFirst("\\s*```$", "");
-
-        return trimmed.trim();
-    }
-
-    /**
-     * Delete a research session and its associated steps (cascade delete).
+     * Delete a research session and its associated steps (cascade delete.
      * Only works on non-running sessions (COMPLETED, FAILED, CANCELLED).
      *
      * @return the deleted session, or null if not found/not deletable
@@ -855,12 +888,14 @@ public class ResearchOrchestratorService {
     }
 
     /**
-     * Delete multiple research sessions in bulk. All-or-nothing rollback semantics — if any deletion fails, none are deleted.
+     * Delete multiple research sessions in bulk. All sessions are validated first — if any is missing or still
+     * processing, the whole batch is rejected and nothing is deleted. Once validation passes, the documents are
+     * removed with a single deleteAllById (standalone MongoDB has no multi-document transactions, so the
+     * all-or-nothing guarantee relies on the up-front validation).
      * Only works on non-running sessions (COMPLETED, FAILED, CANCELLED).
      *
-     * @return list of successfully deleted sessions (always the full list if this method succeeds)
+     * @return list of deleted sessions (always the full list if this method succeeds)
      */
-    @Transactional
     public List<ResearchSession> deleteSessionsInBulk(List<UUID> sessionIds) {
         // Validate all sessions first — if any fail validation, reject entire batch (rollback behavior)
         for (UUID id : sessionIds) {
@@ -881,63 +916,11 @@ public class ResearchOrchestratorService {
 
         List<UUID> idsToDelete = sessions.stream().map(ResearchSession::getId).toList();
         if (!idsToDelete.isEmpty()) {
-            for (UUID id : idsToDelete) {
-                sessionRepo.deleteById(id); // Individual delete within @Transactional — rollback on any failure
-            }
+            sessionRepo.deleteAllById(idsToDelete); // embedded steps go away with their session document
             log.info("Deleted {} research sessions in bulk: {}", idsToDelete.size(), idsToDelete);
         }
 
         return sessions;
     }
 
-    /**
-     * Inner class for sub-topic representation (planned by the breakdown stage, enriched with search queries).
-     */
-    private static class SubTopic {
-        private int id;
-        private String title;
-        private String description;
-        private List<String> searchQueries;
-
-        public SubTopic() {
-        }
-
-        public SubTopic(int id, String title, String description) {
-            this.id = id;
-            this.title = title;
-            this.description = description;
-        }
-
-        public int getId() {
-            return id;
-        }
-
-        public void setId(int id) {
-            this.id = id;
-        }
-
-        public String getTitle() {
-            return title;
-        }
-
-        public void setTitle(String title) {
-            this.title = title;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-
-        public void setDescription(String description) {
-            this.description = description;
-        }
-
-        public List<String> getSearchQueries() {
-            return searchQueries;
-        }
-
-        public void setSearchQueries(List<String> searchQueries) {
-            this.searchQueries = searchQueries;
-        }
-    }
 }

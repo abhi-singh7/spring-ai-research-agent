@@ -22,9 +22,9 @@ In short: **topic → research → report, streamed live.**
 
 | Layer | Technology | Folder |
 |-------|------------|--------|
-| Backend | Java 21 + Spring Boot 3.5.4 + Spring AI 1.1.7 (OpenAI-compatible local LLM) | `research-agent-backend/` |
+| Backend | Java 21 + Spring Boot 4.1.1 + Spring AI 2.0.1 (OpenAI-compatible local LLM) | `research-agent-backend/` |
 | Frontend | Angular 18+ (Signals/RxJS) + Angular Material M3 | `research-agent-ui/` |
-| Database | PostgreSQL | — |
+| Database | MongoDB (single `research_session` collection, steps embedded) | — |
 | LLM | Ollama (OpenAI-compatible endpoint, e.g. `gemma-4-26b`) | local |
 | Search | Self-hosted Firecrawl API + MCP stdio servers (`ollama_web_search`, `ddg_search`) + local fallback tools | local / MCP |
 
@@ -37,10 +37,10 @@ In short: **topic → research → report, streamed live.**
 │  Browser    │ ─────────────► │  Spring Boot     │ ─────────────► │  Ollama   │
 │  (port 4200)│ ◄───────────── │  (port 8080)     │                │  LLM      │
 └──────┬──────┘   events       └─────────┬────────┘ └─────┬──────┘
-       │                                 │ JDBC           │
+       │                                 │ MongoDB        │
        │                                 ▼                ▼
        │                          ┌─────────────┐   ┌──────────────┐
-       │                          │ PostgreSQL  │   │ Firecrawl    │
+       │                          │   MongoDB   │   │ Firecrawl    │
        │                          │ (research-   │   │ search+scrape│
        │                          │  agent DB)   │   │ (port 3002)  │
        │                          └─────────────┘   └──────────────┘
@@ -74,7 +74,7 @@ firecrawl → ddg → ollama_web_search → tavily
 
 - **Java 21** (OpenJDK)
 - **Node.js 20+** with npm
-- **PostgreSQL 15+** — create the database first: `createdb -U postgres research-agent`
+- **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent` — the database is created automatically)
 - **Ollama** running locally with a model available (e.g. `gemma-4-26b`) at `http://localhost:1234`
 - **Firecrawl** self-hosted API at `http://localhost:3002` (optional but recommended for search)
 
@@ -93,8 +93,8 @@ All configuration lives in `src/main/resources/application.yml`. The most import
 |---------|---------|---------|
 | `spring.ai.openai.base-url` | `http://localhost:1234` | Ollama endpoint (no `/v1` suffix) |
 | `spring.ai.openai.chat.options.model` | `google/gemma-4-26b-a4b-qat` | LLM model name |
-| `spring.datasource.url` | `jdbc:postgresql://localhost:5432/research-agent` | Database connection |
-| `spring.jpa.hibernate.ddl-auto` | `validate` | Schema validation only (no auto-modification) |
+| `spring.mongodb.uri` | `mongodb://localhost:27017/research-agent` | MongoDB connection (database created automatically) |
+| `spring.mongodb.representation.uuid` | `STANDARD` | UUIDs stored as standard (RFC 4122) BSON — must match the migration script |
 | `spring.ai.sse.timeout` | `600000` ms | SSE emitter timeout (10 min) |
 
 ### Frontend
@@ -126,12 +126,12 @@ curl -X POST http://localhost:8080/api/research \
 | `config/` | `ChatClientConfig` (OpenAI-compatible client), `AsyncConfig`, `WebConfig` (CORS) |
 | `controller/` | `ResearchController` (REST lifecycle + history + bulk delete), `ResearchStreamController` (SSE endpoint) |
 | `model/dto/` | Request/response contracts (`ResearchRequest`, `ResearchResponse`, `StepDTO`, `FollowUpRequest`, `ReportDTO`, `StreamUpdate`, `ResearchSessionDetailDTO`) |
-| `model/entity/` | JPA entities (`ResearchSession`, `ResearchStep`) |
+| `model/entity/` | Mongo documents (`ResearchSession` with embedded steps, `ResearchStep`) |
 | `model/enums/` | `ResearchStatus` (PENDING/PROCESSING/COMPLETED/FAILED/CANCELLED), `StepType` |
-| `repository/` | Spring Data JPA repositories |
+| `repository/` | Spring Data MongoDB repository + custom fragment (`MongoTemplate`) |
 | `service/` | `ResearchOrchestratorService` (core pipeline), `ResearchStreamingService` (SSE), `FollowUpService`, `LlmGateway` / `SpringAiLlmGateway` (LLM seam), `ResearchCancellationRegistry`, `AbandonedSessionCleanupService` |
 | `tool/` | `WebSearchTool`, `UrlReaderTool`, `McpToolRouter` (search routing + fallbacks) |
-| `src/main/resources/db/migration/` | `V1__init_research_tables.sql` — the only schema migration |
+| `src/main/resources/db/migration/` | `V1__init_research_tables.sql` — legacy PostgreSQL schema, retained untouched as a rollback path (no longer used by the app) |
 
 ### Frontend (`research-agent-ui/src/app/`)
 
@@ -156,7 +156,7 @@ curl -X POST http://localhost:8080/api/research \
 - **Lombok** (`@Data`, `@Slf4j`) reduces boilerplate — install the Lombok plugin in your IDE.
 - **DTOs for all APIs** — never expose entities directly.
 - **Enums for state** — use `ResearchStatus` / `StepType`, not string literals.
-- Research tasks run on an async thread pool (core 5 / max 20). There is **no** OSIV/Hibernate session in the async flow — load via `findByIdWithSteps` (fetch-join) when mutating steps outside a transaction.
+- Research tasks run on an async thread pool (core 5 / max 20). Steps are embedded in the session document, so there is no lazy loading or fetch-join — every `save()` atomically replaces the whole document.
 
 ### Frontend
 - **Standalone components only** — every `@Component` uses `standalone: true`. No NgModules.
@@ -167,8 +167,8 @@ curl -X POST http://localhost:8080/api/research \
 - **Build gotcha** — only add `tsConfig` to the **build** builder in `angular.json`, NOT the serve builder.
 
 ### Database
-- `ddl-auto: validate` — **no** automatic schema changes. Add a new migration under `db/migration/` for schema changes.
-- `hibernate.jdbc.lob.non_contextual_creation=true` is required to avoid PostgreSQL LOB errors with TEXT columns.
+- MongoDB — collections and indexes are created automatically from entity annotations; there are no schema migrations.
+- UUIDs use the STANDARD (RFC 4122) BSON representation (`spring.mongodb.representation.uuid: STANDARD`) — keep it in sync with `scripts/migrate_pg_to_mongo.py`.
 
 ---
 
@@ -176,11 +176,10 @@ curl -X POST http://localhost:8080/api/research \
 
 | Symptom | Fix |
 |---------|-----|
-| Backend fails to start — schema mismatch | Fix entity annotations to match `db/migration/V1__init_research_tables.sql`, or temporarily set `ddl-auto: update` |
+| Backend can't reach MongoDB | Ensure `mongod` is running on port 27017 and `spring.mongodb.uri` in `application.yml` points at it |
 | SSE connection fails immediately | Confirm backend is on port 8080 and CORS allows `localhost:4200` |
 | LLM returns empty responses | Verify the model is loaded (`ollama list`) and `OLLAMA_BASE_URL` matches the endpoint |
 | Frontend proxy not working | Ensure the dev server uses `--proxy-config proxy.conf.json` |
-| PostgreSQL LOB error in auto-commit mode | `hibernate.jdbc.lob.non_contextual_creation=true` is already set — confirm it is present |
 | Abandoned sessions never cleaned up | Check `app.cleanup.stale-after` (default `PT15M`) and `app.cleanup.interval` (default `PT20M`) |
 
 ---
@@ -203,7 +202,7 @@ curl -X POST http://localhost:8080/api/research \
 | [API.md](research-agent-backend/docs/API.md) | REST endpoints + SSE event types with examples |
 | [MODELS.md](research-agent-backend/docs/MODELS.md) | Entities, DTOs, enums, internal models |
 | [CONFIGURATION.md](research-agent-backend/docs/CONFIGURATION.md) | application.yml settings, dependencies, env vars |
-| [DATABASE.md](research-agent-backend/docs/DATABASE.md) | Schema, migration, JPA/PostgreSQL notes |
+| [DATABASE.md](research-agent-backend/docs/DATABASE.md) | Mongo collection/document schema, indexes, PG→Mongo migration |
 
 ### Frontend detail docs (`research-agent-ui/docs/`)
 | Document | Purpose |

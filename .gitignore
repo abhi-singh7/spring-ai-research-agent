@@ -51,6 +51,7 @@ generated-resources/
 dist/
 .angular/
 node_modules/
+**/src/main/resources/static/
 
 # === MCP Tool Servers and Local Dev Tools ===
 .opencode/
@@ -59,3 +60,11 @@ node_modules/
 
 # === Ollama (if used locally) ===
 ollama_models/
+
+# === Python (virtualenvs & bytecode) ===
+.venv/
+**/.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/

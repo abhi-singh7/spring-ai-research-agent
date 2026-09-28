@@ -9,11 +9,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 
-import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -23,12 +21,13 @@ import java.util.concurrent.Executor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class ResearchOrchestratorServiceTest {
 
-    @Mock private ChatClient chatClient;
+    @Mock private LlmGateway llmGateway;
     @Mock private ResearchSessionRepository sessionRepo;
     @Mock private ResearchStreamingService streamService;
     @Mock private Executor researchTaskExecutor;
@@ -237,45 +236,6 @@ class ResearchOrchestratorServiceTest {
             .hasMessageContaining("Cannot delete a processing research session");
     }
 
-    // ---------- extractJsonFromMarkdown (private method tested via reflection) ----------
-
-    @Test
-    void extractJsonFromMarkdown_shouldExtractJsonFromCodeFence() throws Exception {
-        String input = "```json\n[{\"id\": 1, \"title\": \"Sub-topic A\"}]\n```";
-        String result = invokeExtractJson(input);
-        assertThat(result).isEqualTo("[{\"id\": 1, \"title\": \"Sub-topic A\"}]");
-    }
-
-    @Test
-    void extractJsonFromMarkdown_shouldReturnEmptyForNull() throws Exception {
-        String result = invokeExtractJson(null);
-        assertThat(result).isEmpty();
-    }
-
-    @Test
-    void extractJsonFromMarkdown_shouldStripSurroundingText() throws Exception {
-        String input = "Here is your answer:\n\n```json\n[{\"id\": 1, \"title\": \"Sub-topic A\"}]\n```\n\nMore text.";
-        String result = invokeExtractJson(input);
-        assertThat(result).isEqualTo("[{\"id\": 1, \"title\": \"Sub-topic A\"}]");
-    }
-
-    @Test
-    void extractJsonFromMarkdown_shouldHandlePlainJsonWithoutFences() throws Exception {
-        String input = "[{\"id\": 2, \"title\": \"Direct JSON\"}]";
-        String result = invokeExtractJson(input);
-        assertThat(result).isEqualTo("[{\"id\": 2, \"title\": \"Direct JSON\"}]");
-    }
-
-    private String invokeExtractJson(String input) {
-        try {
-            Method method = ResearchOrchestratorService.class.getDeclaredMethod("extractJsonFromMarkdown", String.class);
-            method.setAccessible(true);
-            return (String) method.invoke(service, input);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     // ---------- deleteSessionsInBulk ----------
 
     @Test
@@ -291,8 +251,8 @@ class ResearchOrchestratorServiceTest {
         List<ResearchSession> result = service.deleteSessionsInBulk(List.of(id1, id2));
 
         assertThat(result).hasSize(2);
-        verify(sessionRepo).deleteById(id1);
-        verify(sessionRepo).deleteById(id2);
+        // One atomic multi-delete of the whole validated batch (Mongo has no per-row rollback)
+        verify(sessionRepo).deleteAllById(List.of(id1, id2));
     }
 
     @Test
@@ -312,7 +272,7 @@ class ResearchOrchestratorServiceTest {
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("Cannot delete session");
 
-        verify(sessionRepo, never()).deleteById(any());
+        verify(sessionRepo, never()).deleteAllById(anyList());
     }
 
     @Test
@@ -328,7 +288,7 @@ class ResearchOrchestratorServiceTest {
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("Cannot delete session");
 
-        verify(sessionRepo, never()).deleteById(any());
+        verify(sessionRepo, never()).deleteAllById(anyList());
     }
 
     // ---------- helpers ----------

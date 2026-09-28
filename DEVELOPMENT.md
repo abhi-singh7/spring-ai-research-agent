@@ -6,20 +6,25 @@
 
 - **Java 21** (OpenJDK)
 - **Node.js 20+** with npm
-- **PostgreSQL 15+** — create database manually: `createdb -U postgres research-agent`
+- **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent`)
 - **Ollama** running locally with a model available (e.g., `gemma-4-26b`) at `http://localhost:1234`
 
 ### Database Setup
 
-The PostgreSQL database must be created before first run. Flyway dependency is commented out in pom.xml, so schema validation relies on JPA entities matching the existing tables.
+The backend uses MongoDB — there is no schema to create or migrate. The `research-agent` database and the `research_session` collection are created automatically on first write, and indexes are auto-created from entity annotations.
+
+If you have legacy data in the old PostgreSQL database, run the one-shot migration script (idempotent, read-only against PostgreSQL):
 
 ```bash
-createdb -U postgres research-agent
+cd scripts
+pip install -r requirements.txt
+python migrate_pg_to_mongo.py --dry-run   # preview what would be migrated
+python migrate_pg_to_mongo.py             # migrate + verify
 ```
 
 Verify connection:
 ```bash
-psql -U postgres -d research-agent -c "SELECT 1;"
+mongosh mongodb://localhost:27017/research-agent --eval "db.research_session.countDocuments()"
 ```
 
 ### Backend Setup
@@ -45,12 +50,11 @@ All configuration is in `src/main/resources/application.yml`. Key settings:
 |---------|---------|-------------|
 | `spring.ai.openai.base-url` | `http://localhost:1234` | Ollama endpoint (no `/v1` suffix) |
 | `spring.ai.openai.chat.options.model` | `google/gemma-4-26b-a4b-qat` | LLM model name |
-| `spring.datasource.url` | `jdbc:postgresql://localhost:5432/research-agent` | Database connection |
-| `spring.jpa.hibernate.ddl-auto` | `validate` | Schema validation only (no auto-modification) |
+| `spring.mongodb.uri` | `mongodb://localhost:27017/research-agent` | MongoDB connection (database created automatically) |
+| `spring.mongodb.representation.uuid` | `STANDARD` | UUIDs stored as standard (RFC 4122) BSON — must match the migration script |
 | `spring.ai.sse.timeout` | `600000` ms | SSE emitter timeout (10 min) |
 
 Environment variables that override defaults:
-- `DB_USERNAME`, `DB_PASSWORD` — PostgreSQL credentials
 - `OLLAMA_BASE_URL` — Ollama endpoint URL
 - `LLM_MODEL` — model name to use
 - `OPENAI_API_KEY` — API key (any value works for local Ollama)
@@ -135,7 +139,7 @@ curl -X POST http://localhost:8080/api/research/SESSION_ID/followup \
 
 - **SSE events**: Check `ResearchStreamingService` logs for event sending. Events are named SSE types (PROGRESS, REPORT_CHUNK, etc.) with payload data.
 - **LLM calls**: Spring AI logs at DEBUG level show model responses. Set logging to debug: in application.yml add `logging.level.org.springframework.ai=DEBUG`.
-- **Database queries**: Use Hibernate SQL logging (`logging.level.org.hibernate.SQL=DEBUG`) or connect directly to PostgreSQL for inspection.
+- **Database**: inspect data directly with `mongosh mongodb://localhost:27017/research-agent` (e.g., `db.research_session.find()`, `db.research_session.getIndexes()`).
 
 ### Frontend Debugging
 
@@ -147,11 +151,10 @@ curl -X POST http://localhost:8080/api/research/SESSION_ID/followup \
 
 | Issue | Solution |
 |-------|----------|
-| Backend fails to start — schema mismatch | Run `ddl-auto: update` temporarily or fix entity annotations to match DB schema |
+| Backend can't reach MongoDB | Ensure `mongod` is running on port 27017 and `spring.mongodb.uri` in `application.yml` points at it |
 | SSE connection fails immediately | Check that backend is running on port 8080 and CORS allows localhost:4200 |
 | LLM returns empty responses | Verify Ollama model is loaded (`ollama list`) and `OLLAMA_BASE_URL` matches the actual endpoint |
 | Frontend proxy not working | Ensure `proxy.conf.json` exists and dev server uses `--proxy-config proxy.conf.json` |
-| PostgreSQL LOB error in auto-commit mode | `hibernate.jdbc.lob.non_contextual_creation=true` is already set in application.yml — this should be resolved |
 
 ---
 
@@ -175,7 +178,7 @@ curl -X POST http://localhost:8080/api/research/SESSION_ID/followup \
 
 ### Testing
 
-The backend has JUnit 5 tests under `src/test/java/com/researchagent/` covering controllers, services, and tools. H2 in-memory database is used for test isolation with PostgreSQL compatibility mode. No frontend test scripts are configured (karma tests exist but no npm script invokes them).
+The backend has JUnit 5 tests under `src/test/java/com/researchagent/` covering controllers, services, and tools. Integration tests run against a locally running MongoDB using a dedicated `research-agent-test` database (collections are cleaned per test). No frontend test scripts are configured (karma tests exist but no npm script invokes them).
 
 ---
 
