@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -25,7 +25,7 @@ class AbandonedSessionCleanupServiceTest {
     @Autowired
     private AbandonedSessionCleanupService cleanupService;
 
-    @MockBean
+    @MockitoBean
     private ResearchSessionRepository sessionRepo;
 
     private UUID staleId1, staleId2, recentId;

@@ -42,19 +42,12 @@ spring:
                 - --fetch-backend
                 - auto
 
-# DataSource configuration for PostgreSQL
-spring.datasource.url: jdbc:postgresql://localhost:5432/research-agent
-spring.datasource.username: ${DB_USERNAME:postgres}
-spring.datasource.password: ${DB_PASSWORD:postgres}
-spring.datasource.driver-class-name: org.postgresql.Driver
-
-# JPA configuration
-spring.jpa.hibernate.ddl-auto: validate
-spring.jpa.properties.hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
-# Use non-contextual LOB creation to avoid PostgreSQL Large Object API (requires non-auto-commit)
-# This instructs Hibernate to stream LOB content instead of using PostgreSQL OID-based LOs,
-# preventing the "Large Objects may not be used in auto-commit mode" error.
-spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation: true
+# MongoDB configuration (PostgreSQL is retained untouched as a rollback path — see AGENTS.md)
+# NOTE: Spring Boot 4 moved Mongo properties from spring.data.mongodb.* to spring.mongodb.*
+spring.mongodb.uri: mongodb://localhost:27017/research-agent
+# UUIDs are stored in the standard (RFC 4122) BSON representation. The one-shot migration script
+# (scripts/migrate_pg_to_mongo.py) writes _id values with the same representation — keep them in sync.
+spring.mongodb.representation.uuid: STANDARD
 
 # Async thread pool for research tasks
 task:

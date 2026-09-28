@@ -14,18 +14,13 @@ spring:
           enabled: false
         stdio:
           connections: {}
-  datasource:
-    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
-  jpa:
-    hibernate:
-      ddl-auto: create-drop
-    properties:
-      hibernate.dialect: org.hibernate.dialect.H2Dialect
-      hibernate.jdbc.lob.non_contextual_creation: true
-    show-sql: false
+  # Spring Boot 4 moved Mongo properties from spring.data.mongodb.* to spring.mongodb.*
+  mongodb:
+    # Tests use a dedicated database on the locally running MongoDB so repeated runs never touch
+    # production data. Integration tests clean their collections in @BeforeEach.
+    uri: mongodb://localhost:27017/research-agent-test
+    representation:
+      uuid: STANDARD
   mvc:
     throw-exception-if-no-handler-found: true
 

@@ -1,5 +1,6 @@
 package com.researchagent.service;
 
+import org.springframework.core.ParameterizedTypeReference;
 import reactor.core.publisher.Flux;
 
 /**
@@ -22,4 +23,19 @@ public interface LlmGateway {
      * reach the frontend while the report is being written.
      */
     Flux<String> streamComplete(String systemPrompt, String userMessage, Double temperature);
+
+    /**
+     * Run a single completion and bind the final response to a typed object using Spring AI's
+     * structured-output support ({@code call().entity(...)}): a JSON schema is generated from
+     * {@code type}, appended to the prompt, and the model's answer is parsed into it.
+     *
+     * <p>Throws a {@link RuntimeException} when the answer cannot be converted — callers may retry.</p>
+     */
+    <T> T completeStructured(String systemPrompt, String userMessage, Double temperature, Class<T> type);
+
+    /**
+     * Same as {@link #completeStructured(String, String, Double, Class)} for generic types such as
+     * {@code List<SubTopic>} (the schema is generated from the parameterized type).
+     */
+    <T> T completeStructured(String systemPrompt, String userMessage, Double temperature, ParameterizedTypeReference<T> type);
 }

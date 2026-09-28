@@ -15,8 +15,8 @@ The backend is a Spring Boot application that orchestrates AI-powered research t
                                │        │        │        │
                                ▼        ▼        ▼        ▼
                           ┌──────────────────────────────────┐
-                          │      PostgreSQL                   │
-                          │  (research-agent DB)              │
+                          │           MongoDB                │
+                          │  (research-agent DB, port 27017)  │
                           └──────────────────────────────────┘
 
           ┌─────────────────────────────────────────────┐
@@ -138,16 +138,16 @@ Routes LLM search tasks to appropriate backends based on task type:
 
 The `McpToolRouter.getPreferredServer()` returns the first server in the chain (primary), while `getRoutingChain()` returns all fallback servers. The Spring AI MCP client handles the actual tool calling; this router is used to determine task type categorization.
 
-### 4. Repositories — Data Access
+### 4. Repositories — Data Access (MongoDB)
 
 #### `ResearchSessionRepository`
-- Extends `JpaSpecificationExecutor<ResearchSession>` for dynamic query building
-- Custom method: `findByIdWithSteps(UUID)` — fetches session with eager-load of the steps collection (avoids N+1 lazy-loading)
-- Custom method: `findAllByStatusAndCreatedAtBefore(ResearchStatus, LocalDateTime)` — used by cleanup scheduler to find abandoned sessions
+- Extends `MongoRepository<ResearchSession, UUID>` — standard CRUD against the `research_session` collection
+- `findByIdWithSteps(UUID)` — plain `findById` alias; steps are embedded in the document, so a find already returns the full aggregate (kept for call-site compatibility with the old JPA fetch-join method)
+- Derived queries: `findAllByOrderByCreatedAtDesc(Pageable)` (paginated history), `findByTopicContainingIgnoreCase(String, Pageable)` (topic search), `findAllByStatusAndCreatedAtBefore(ResearchStatus, LocalDateTime)` (cleanup scheduler finds abandoned sessions)
 
-#### `ResearchStepRepository`
-- Extends `JpaRepository<ResearchStep, UUID>`
-- Custom method: `findBySessionOrderByOrderIndex(UUID)` — fetches all steps for a session ordered by index
+#### `ResearchSessionRepositoryCustom` (+ `...CustomImpl`)
+- Repository fragment using `MongoTemplate` for operations derived queries can't express:
+- `markCancelledIfProcessing(UUID, LocalDateTime, String)` — conditional `updateFirst()` that transitions a session to CANCELLED only if it is still PROCESSING (the no-clobber rule holds at the database level)
 
 ### 5. Configuration Classes
 
@@ -160,18 +160,17 @@ Creates a basic ChatClient bean via Spring AI's auto-configured beans. No manual
 #### `WebConfig`
 CORS configuration allowing origins `http://localhost:4200`, `http://127.0.0.1:4200` (Angular dev server). Allows GET, POST, PUT, DELETE, OPTIONS methods with all headers.
 
-### 6. Domain Models — JPA Entities
+### 6. Domain Models — Mongo Documents
 
 #### `ResearchSession`
-Top-level entity representing a research task:
-- Bidirectional OneToMany with ResearchStep (CascadeType.ALL, orphanRemoval=true)
-- Lifecycle callbacks: `@PrePersist` sets createdAt, `@PreUpdate` updates updatedAt
-- Convenience methods: `addStep()`, `complete()`, `fail(errorMessage)` — encapsulates state transitions
+Top-level document (`@Document(collection = "research_session")`) representing a research task:
+- Embeds its steps as an array — every `save()` atomically replaces the whole document (no lazy loading, no cascade configuration)
+- Indexes auto-created from annotations: compound `{ status: 1, createdAt: -1 }` (`@CompoundIndex`) and single-field `createdAt` (`@Indexed`)
+- Convenience methods: `addStep()`, `complete()`, `fail(errorMessage)` — encapsulate state transitions (terminal states are never overwritten)
 
 #### `ResearchStep`
-Represents an individual step in the research pipeline:
-- ManyToOne to ResearchSession (LAZY fetch)
-- Unique constraint on `(session_id, order_index)` pair ensures ordering within a session
+Embedded sub-document representing an individual step in the research pipeline:
+- No separate collection and no back-reference to the parent; ordering within a session is given by `orderIndex`
 - Status stored as raw String ("PENDING"/"RUNNING"/"COMPLETED"/"FAILED") — inconsistent with how `ResearchStatus` enum is used elsewhere
 
 ---

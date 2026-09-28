@@ -3,10 +3,12 @@ package com.researchagent.model.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.researchagent.model.enums.ResearchStatus;
-import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
-import org.hibernate.annotations.UuidGenerator;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.mapping.Document;
 
 
 import java.time.LocalDateTime;
@@ -14,60 +16,48 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Research session document (collection {@code research_session}).
+ *
+ * <p>Steps are EMBEDDED in this document: there is no separate step collection, no lazy
+ * loading and no fetch-join. Every {@code save()} is a single atomic document replace that
+ * writes the session together with its full step list.</p>
+ */
 @Data
-@Entity
-@Table(name = "research_session")
+@Document(collection = "research_session")
+@CompoundIndex(name = "status_createdAt", def = "{ status: 1, createdAt: -1 }")
 public class ResearchSession {
 
     @Id
-    @UuidGenerator(style = UuidGenerator.Style.RANDOM)
-    private UUID id;
+    private UUID id = UUID.randomUUID();
 
-    @Column(nullable = false, length = 1024)
     private String topic;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
     private ResearchStatus status = ResearchStatus.PENDING;
 
-    @Column(columnDefinition = "TEXT")
     private String prompt;
 
-    @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @JsonIgnore
     @ToString.Exclude
     private List<ResearchStep> steps = new ArrayList<>();
 
-    //@Lob
-    @Column(columnDefinition = "TEXT")
     private String finalReport;
 
-    @Column(name = "created_at", updatable = false)
+    @Indexed
     private LocalDateTime createdAt;
 
-    @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @Column(name = "completed_at")
     private LocalDateTime completedAt;
 
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        updatedAt = LocalDateTime.now();
-    }
-
-    @PreUpdate
-    protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
-    }
-
     /**
-     * Convenience method to add a step and maintain bidirectional relationship.
+     * Convenience method to add a step to the embedded list.
      */
     public void addStep(ResearchStep step) {
+        if (steps == null) {
+            steps = new ArrayList<>();
+        }
         steps.add(step);
-        step.setSession(this);
     }
 
     /**

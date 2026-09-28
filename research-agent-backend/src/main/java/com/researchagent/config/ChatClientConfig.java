@@ -162,18 +162,4 @@ public class ChatClientConfig {
     }
 
 
-    @Bean
-    ApplicationRunner toolDebugger(ChatClient.Builder builder, WebSearchTool tool) {
-        return args -> {
-            ChatClient client = builder.defaultTools(tool).build();
-
-            var result = client.prompt()
-                    .user("You MUST use the search tool to answer this question: What is 2+2?\n" +
-                            "Do not respond without calling a tool.")
-                    .call()
-                    .chatResponse();
-
-            System.out.println("MODEL RESPONSE = " + result);
-        };
-    }
 }

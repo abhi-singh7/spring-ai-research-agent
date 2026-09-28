@@ -1,50 +1,30 @@
 package com.researchagent.model.entity;
 
-
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.researchagent.model.enums.StepType;
-import jakarta.persistence.*;
 import lombok.Data;
-import lombok.ToString;
-import org.hibernate.annotations.UuidGenerator;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+/**
+ * Embedded step document inside {@link ResearchSession#getSteps()}.
+ *
+ * <p>Order within the session is given by {@link #orderIndex} (unique per session, kept
+ * sequential as steps are appended). Stored as a sub-document of the session — there is no
+ * separate collection and no back-reference to the parent.</p>
+ */
 @Data
-@Entity
-@Table(name = "research_step", uniqueConstraints = @UniqueConstraint(columnNames = {"session_id", "order_index"}))
 public class ResearchStep {
 
-    @Id
-    @UuidGenerator(style = UuidGenerator.Style.RANDOM)
-    private UUID id;
+    private UUID id = UUID.randomUUID();
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "session_id", nullable = false, referencedColumnName = "id")
-    @JsonIgnoreProperties("steps")
-    @ToString.Exclude
-    private ResearchSession session;
-
-    @Column(nullable = false)
     private Integer orderIndex;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
     private StepType type;
 
-   // @Lob
-    @Column(columnDefinition = "TEXT")
     private String content;
 
-    @Column(length = 32)
     private String status = "PENDING";
 
-    @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
-
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-    }
 }

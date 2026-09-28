@@ -1,14 +1,19 @@
 package com.researchagent.service;
 
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.dto.ResearchRoundNote;
+import com.researchagent.model.dto.ResearchRoundNote.SourceRef;
+import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.model.enums.StepType;
 import com.researchagent.repository.ResearchSessionRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.List;
 import java.util.UUID;
@@ -17,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
@@ -24,12 +30,11 @@ import static org.mockito.Mockito.when;
 /**
  * Full-context regression test for the research pipeline's persistence behavior.
  *
- * <p>Runs the REAL orchestrator (including its {@code @Async} proxy), REAL Hibernate against H2 with the
- * production schema/constraints (incl. {@code uq_session_order}), and a mocked {@link LlmGateway}. This is
- * what guards against step re-insertion on repeated {@code repo.save(session)} merges: because step ids are
- * DB-generated, re-merging a stale local entity graph makes Hibernate treat already-persisted steps as new
- * children → duplicate-key violation. The earlier unit tests (mocked repository) cannot catch this; only a
- * real JPA environment can.</p>
+ * <p>Runs the REAL orchestrator (including its {@code @Async} proxy) against REAL Spring Data MongoDB on the
+ * local test database, with a mocked {@link LlmGateway}. With embedded steps every save() is a whole-document
+ * replace, so this guards that repeated incremental saves never duplicate or drop step entries — exactly 4
+ * steps with unique sequential order indexes after a full run. The earlier unit tests (mocked repository)
+ * cannot catch this; only a real persistence environment can.</p>
  */
 @SpringBootTest
 class OrchestratorPersistenceIntegrationTest {
@@ -40,33 +45,36 @@ class OrchestratorPersistenceIntegrationTest {
     @Autowired
     private ResearchSessionRepository sessionRepo;
 
-    @MockBean
+    @MockitoBean
     private LlmGateway llmGateway;
 
-    /** Planning (breakdown) output: a JSON ARRAY of 2 sub-topics per the planner schema. */
-    private static final String BREAKDOWN_JSON = """
-            [
-              {"id":1,"title":"Alpha","description":"alpha scope","searchQueries":["alpha query"]},
-              {"id":2,"title":"Beta","description":"beta scope","searchQueries":["beta query"]}
-            ]""";
+    /** The test database persists across runs on the local MongoDB — start each test from a clean slate. */
+    @BeforeEach
+    void cleanDatabase() {
+        sessionRepo.deleteAll();
+    }
 
-    /** Research notes: >400 chars and 3 captured source bullets → coverage met after a single round. */
-    private static final String RESEARCH_NOTES = """
-            FINDINGS:
-            The topic has been investigated across multiple independent sources. Sources agree on the core
-            facts, with minor differences in emphasis; cross-checking several of them confirms the central
-            claims and provides concrete examples, dates, and figures that support each assertion made here.
+    /** Planning (breakdown) output: a typed list of 2 sub-topics per the planner's structured-output schema. */
+    private static List<SubTopic> breakdownPlan() {
+        return List.of(
+                new SubTopic(1, "Alpha", "alpha scope", List.of("alpha query")),
+                new SubTopic(2, "Beta", "beta scope", List.of("beta query")));
+    }
 
-            SOURCES:
-            - Source One — http://source1.example.com/a
-            - Source Two — http://source2.example.com/b
-            - Source Three — http://source3.example.com/c""";
+    /** Research note: >400 chars and 3 captured sources → coverage met after a single round. */
+    private static ResearchRoundNote researchNote() {
+        return new ResearchRoundNote(
+                List.of("The topic has been investigated across multiple independent sources. Sources agree on the core facts, with minor differences in emphasis; cross-checking several of them confirms the central claims and provides concrete examples, dates, and figures that support each assertion made here."),
+                List.of(new SourceRef("Source One", "http://source1.example.com/a"),
+                        new SourceRef("Source Two", "http://source2.example.com/b"),
+                        new SourceRef("Source Three", "http://source3.example.com/c")),
+                List.of("none"));
+    }
 
     @Test
     void fullResearchFlow_persistsEveryStepWithoutDuplicateKeyViolation() throws InterruptedException {
-        // Arrange: a session row as created by createAndStart (PROCESSING, started).
-        // Ids are DB-generated (UUIDGenerator): save first WITHOUT setting an id, then read it back —
-        // pre-setting an id would make Spring Data take the merge path and fail with a stale-object error.
+        // Arrange: a session document as created by createAndStart (PROCESSING, started).
+        // The UUID is generated in the entity constructor; save it and read the id back.
         ResearchSession session = new ResearchSession();
         session.setTopic("Integration persistence check");
         session.setStatus(ResearchStatus.PROCESSING);
@@ -74,8 +82,10 @@ class OrchestratorPersistenceIntegrationTest {
         UUID sessionId = session.getId();
 
         // LLM stubs per phase (temperatures match the service constants: planning 0.3 / research 0.7 / synthesis 0.4)
-        when(llmGateway.complete(anyString(), anyString(), eq(0.3))).thenReturn(BREAKDOWN_JSON);
-        when(llmGateway.complete(anyString(), anyString(), eq(0.7))).thenReturn(RESEARCH_NOTES);
+        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+                .thenReturn(breakdownPlan());
+        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
+                .thenReturn(researchNote());
         when(llmGateway.streamComplete(anyString(), anyString(), eq(0.4)))
                 .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
 
@@ -94,7 +104,7 @@ class OrchestratorPersistenceIntegrationTest {
             status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
         }
 
-        // Assert: completed, and exactly 4 step rows with unique order indexes (no duplicates)
+        // Assert: completed, and exactly 4 embedded steps with unique order indexes (no duplicates)
         assertEquals(ResearchStatus.COMPLETED, status, "research run must complete without persistence errors");
         ResearchSession finished = sessionRepo.findByIdWithSteps(sessionId);
         List<Integer> orderIndexes = finished.getSteps().stream()
@@ -108,8 +118,8 @@ class OrchestratorPersistenceIntegrationTest {
     }
 
     /**
-     * Cancelling a running pipeline must persist CANCELLED atomically (the conditional UPDATE, which also proves the
-     * native query binds UUID parameters correctly) and stop all further work — no report generation after cancel.
+     * Cancelling a running pipeline must persist CANCELLED atomically (the conditional updateFirst, which also
+     * proves UUID parameters bind correctly) and stop all further work — no report generation after cancel.
      */
     @Test
     void cancelMidPipeline_persistsCancelledAtomically_andStopsRun() throws InterruptedException {
@@ -120,13 +130,14 @@ class OrchestratorPersistenceIntegrationTest {
         UUID sessionId = session.getId();
 
         AtomicInteger researchCalls = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), eq(0.3))).thenReturn(BREAKDOWN_JSON);
-        when(llmGateway.complete(anyString(), anyString(), eq(0.7))).thenAnswer(inv -> {
+        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+                .thenReturn(breakdownPlan());
+        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class))).thenAnswer(inv -> {
             if (researchCalls.incrementAndGet() == 1) {
                 // User cancels while the first research LLM call is in flight.
                 orchestrator.cancelResearch(sessionId);
             }
-            return RESEARCH_NOTES;
+            return researchNote();
         });
 
         ResearchRequest request = new ResearchRequest();

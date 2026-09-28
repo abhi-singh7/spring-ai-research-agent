@@ -50,9 +50,9 @@ npx ng test --include src/app/core/services/research.service.spec.ts
 The Research Agent is a full-stack system that takes a user's research topic, autonomously breaks it down into sub-topics, searches the web for each using an LLM with tool calling, reads content from multiple sources, synthesizes findings into a comprehensive report, and displays everything in real-time via SSE streaming.
 
 **Tech Stack:**
-- **Backend:** Java 21 + Spring Boot 3.5.4 + Spring AI 1.1.7 (OpenAI-compatible local LLM) — `research-agent-backend/`
+- **Backend:** Java 21 + Spring Boot 4.1.1 + Spring AI 2.0.1 (OpenAI-compatible local LLM) — `research-agent-backend/`
 - **Frontend:** Angular 18+ with Signals/RxJS + Angular Material M3 — `research-agent-ui/`
-- **Database:** PostgreSQL
+- **Database:** MongoDB (single `research_session` collection, steps embedded in the session document)
 
 ### Backend Flow
 
@@ -101,7 +101,7 @@ StepListComponent       ReportViewerComponent  FollowupFormComponent
 
 ### Backend Conventions
 
-1. **Spring AI 1.1.7** — Uses `spring-ai-starter-model-openai` artifact, not `spring-ai-openai-spring-boot-starter`. Config classes are auto-configured — no bean definitions needed.
+1. **Spring AI 2.0** — uses `spring-ai-starter-model-openai` artifact, not `spring-ai-openai-spring-boot-starter`. Config classes are auto-configured — no bean definitions needed.
 2. **Reactive streaming** — LLM responses use `.stream().content()` returning `Flux<String>`, never blocking calls. SSE endpoints return `SseEmitter` from `ResearchStreamingService`.
 3. **DTO pattern** — All API inputs/outputs use DTOs (e.g., `ResearchRequest`, `ResearchResponse`, `StepDTO`). Never expose entity classes directly in APIs.
 4. **Enum types for state** — Use `ResearchStatus` and `StepType` enums consistently, not string literals.
@@ -117,7 +117,7 @@ StepListComponent       ReportViewerComponent  FollowupFormComponent
 
 ### Configuration Conventions
 
-- All environment variables use `${VAR_NAME:default_value}` syntax in `application.yml` (e.g., `jdbc:postgresql://localhost:5432/research-agent`, username defaults to `postgres`, password defaults to `postgres`).
+- All environment variables use `${VAR_NAME:default_value}` syntax in `application.yml`. The MongoDB URI is fixed at `mongodb://localhost:27017/research-agent` in `application.yml` (no env override).
 - LLM endpoint defaults to Ollama at `http://localhost:1234` (no `/v1` suffix). Override with `OLLAMA_BASE_URL` env var.
 
 ### Important Angular Build Gotchas

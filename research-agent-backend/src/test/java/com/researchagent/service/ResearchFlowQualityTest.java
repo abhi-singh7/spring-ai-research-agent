@@ -1,6 +1,9 @@
 package com.researchagent.service;
 
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.dto.ResearchRoundNote;
+import com.researchagent.model.dto.ResearchRoundNote.SourceRef;
+import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.repository.ResearchSessionRepository;
@@ -8,9 +11,12 @@ import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.core.ParameterizedTypeReference;
 import reactor.core.publisher.Flux;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,7 +36,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * Behavior tests for the quality-enhanced research pipeline (iterative rounds, resilience, source capture).
- * The LLM is mocked at the {@link LlmGateway} seam — no Spring context needed.
+ * The LLM is mocked at the {@link LlmGateway} seam — no Spring context needed. Structured completions
+ * ({@code completeStructured}) stand in for Spring AI's schema-generated prompts: the breakdown returns a
+ * typed {@code List<SubTopic>}, research rounds return a typed {@link ResearchRoundNote}.
  */
 class ResearchFlowQualityTest {
 
@@ -64,41 +72,28 @@ class ResearchFlowQualityTest {
 
     // ---------- fixtures ----------
 
-    private static String breakdownJson(int n) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 1; i <= n; i++) {
-            if (i > 1) {
-                sb.append(", ");
-            }
-            sb.append("{\"id\":").append(i)
-                    .append(",\"title\":\"Subtopic ").append(i).append("\"")
-                    .append(",\"description\":\"desc-").append(i).append("\"")
-                    .append(",\"searchQueries\":[\"q").append(i).append("\"]}")
-                    ;
-        }
-        return sb.append("]").toString();
+    private static SubTopic subTopic(int id, String title) {
+        return new SubTopic(id, title, "desc-" + id, List.of("q" + id));
     }
 
     /** A note that satisfies the coverage heuristic: >=400 chars and 3 distinct source URLs. */
-    private static String coveredNote() {
-        StringBuilder findings = new StringBuilder("## Findings\n");
+    private static ResearchRoundNote coveredNote() {
+        List<String> findings = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
-            findings.append("- Finding number ").append(i)
-                    .append(": a substantive claim that is supported by the sources read this round. \n");
+            findings.add("Finding number " + i + ": a substantive claim that is supported by the sources read this round.");
         }
-        return findings
-                + "## Sources Consulted\n"
-                + "- Survey paper — https://example.com/paper-one\n"
-                + "- Vendor docs — https://docs.example.org/two\n"
-                + "- Academic study — https://academic.edu/three\n"
-                + "## Open Questions\n- none";
+        return new ResearchRoundNote(findings,
+                List.of(new SourceRef("Survey paper", "https://example.com/paper-one"),
+                        new SourceRef("Vendor docs", "https://docs.example.org/two"),
+                        new SourceRef("Academic study", "https://academic.edu/three")),
+                List.of("none"));
     }
 
     /** A thin note: short and with a single source, so another round is warranted. */
-    private static String thinNote() {
-        return "## Findings\n- Early signal only.\n"
-                + "## Sources Consulted\n- First hit — https://a.io/1\n"
-                + "## Open Questions\n- depth missing";
+    private static ResearchRoundNote thinNote() {
+        return new ResearchRoundNote(List.of("Early signal only."),
+                List.of(new SourceRef("First hit", "https://a.io/1")),
+                List.of("depth missing"));
     }
 
     private ResearchRequest request(int maxIterations) {
@@ -112,8 +107,10 @@ class ResearchFlowQualityTest {
 
     @Test
     void happyPath_completesSession_andReferencesBuiltFromCapturedSources() {
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class)))
-                .thenReturn(breakdownJson(2), coveredNote(), coveredNote());
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1"), subTopic(2, "Subtopic 2")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(coveredNote());
         when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
                 .thenReturn(Flux.just("Hello ", "world"));
 
@@ -135,33 +132,41 @@ class ResearchFlowQualityTest {
     }
 
     @Test
-    void breakdown_retriesOnceWithCorrectiveNudge_onUnparseableJson() {
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class)))
-                .thenReturn("Sure! Here are the topics you asked for (no json at all).",
-                        breakdownJson(1), coveredNote());
+    void breakdown_retriesOnUnconvertibleOutput_thenSucceeds() {
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenThrow(new IllegalStateException("model returned prose instead of JSON"))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(coveredNote());
         when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
                 .thenReturn(Flux.just("ok"));
 
         service.processResearchAsync(session.getId(), request(1));
 
         assertEquals(ResearchStatus.COMPLETED, session.getStatus());
-        // 1 bad breakdown + 1 corrective breakdown + 1 research round = exactly 3 LLM calls
-        verify(llmGateway, times(3)).complete(anyString(), anyString(), any(Double.class));
+        // 1 failed structured breakdown attempt + 1 successful attempt + 1 research round = exactly 3 LLM calls
+        verify(llmGateway, times(2)).completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class));
+        verify(llmGateway, times(1)).completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class));
+        verify(llmGateway, never()).complete(anyString(), anyString(), any(Double.class));
     }
 
     @Test
     void singleSubTopicFailure_sessionStillCompletes_andGapsDocumented() {
-        AtomicInteger callNo = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
-            int n = callNo.incrementAndGet();
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1"), subTopic(2, "Subtopic 2")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class))).thenAnswer(inv -> {
             String user = inv.getArgument(1);
-            if (n == 1) {
-                return breakdownJson(2);
-            }
             if (user.contains("Subtopic 1")) {
                 throw new RuntimeException("LLM down"); // fails all retries
             }
             return coveredNote();
+        });
+        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
+            String user = inv.getArgument(1);
+            if (user.contains("Subtopic 1")) {
+                throw new RuntimeException("LLM down"); // free-form fallback attempts also fail
+            }
+            return "free-form note";
         });
         when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
                 .thenReturn(Flux.just("partial report"));
@@ -176,20 +181,20 @@ class ResearchFlowQualityTest {
         assertTrue(synthesisInput.getValue().contains("Failed Sub-topics"));
         assertTrue(synthesisInput.getValue().contains("Subtopic 1"));
 
-        // Breakdown(1) + subtopic-1 retries(3) + subtopic-2 round(1) = 5 LLM calls total.
-        verify(llmGateway, times(5)).complete(anyString(), anyString(), any(Double.class));
+        // Breakdown(1) + subtopic-1: structured attempt(1) + free-form fallbacks(2) + subtopic-2 round(1) = 5 LLM calls total.
+        verify(llmGateway, times(1)).completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class));
+        verify(llmGateway, times(2)).completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class));
+        verify(llmGateway, times(2)).complete(anyString(), anyString(), any(Double.class));
     }
 
     @Test
     void allSubTopicsFail_sessionFailsAndErrorEmitted() {
-        AtomicInteger callNo = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
-            int n = callNo.incrementAndGet();
-            if (n == 1) {
-                return breakdownJson(1);
-            }
-            throw new RuntimeException("LLM down");
-        });
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenThrow(new RuntimeException("LLM down"));
+        when(llmGateway.complete(anyString(), anyString(), any(Double.class)))
+                .thenThrow(new RuntimeException("LLM down"));
 
         service.processResearchAsync(session.getId(), request(2));
 
@@ -201,25 +206,20 @@ class ResearchFlowQualityTest {
 
     @Test
     void thinRound_triggersSecondResearchRound() {
-        AtomicInteger callNo = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
-            int n = callNo.incrementAndGet();
-            if (n == 1) {
-                return breakdownJson(1);
-            }
-            if (n == 2) {
-                return thinNote(); // round 1: insufficient coverage
-            }
-            return coveredNote();  // round 2: fills the gap
-        });
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(thinNote(), coveredNote()); // round 1: insufficient coverage; round 2: fills the gap
         when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
                 .thenReturn(Flux.just("done"));
 
         service.processResearchAsync(session.getId(), request(2)); // hard cap: at most 2 rounds per sub-topic
 
         assertEquals(ResearchStatus.COMPLETED, session.getStatus());
-        // breakdown + round1 + round2 = exactly 3 LLM calls (no extra round after coverage)
-        verify(llmGateway, times(3)).complete(anyString(), anyString(), any(Double.class));
+        // breakdown + round1 + round2 = exactly 3 structured LLM calls (no extra round after coverage)
+        verify(llmGateway, times(1)).completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class));
+        verify(llmGateway, times(2)).completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class));
+        verify(llmGateway, never()).complete(anyString(), anyString(), any(Double.class));
 
         ArgumentCaptor<String> synthesisInput = ArgumentCaptor.forClass(String.class);
         verify(llmGateway).streamComplete(anyString(), synthesisInput.capture(), any(Double.class));
@@ -229,7 +229,8 @@ class ResearchFlowQualityTest {
 
     @Test
     void persistenceFailure_doesNotEscapeAsyncMethod_andEmitsError() {
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenReturn(breakdownJson(1));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
         org.mockito.Mockito.doThrow(new RuntimeException("db down")).when(sessionRepo).save(any()); // every save fails
 
         assertDoesNotThrow(() -> service.processResearchAsync(session.getId(), request(1)));
@@ -240,20 +241,16 @@ class ResearchFlowQualityTest {
 
     @Test
     void bareUrlsInFindings_stillBecomeReferencesEntries() {
-        StringBuilder note = new StringBuilder("## Findings\nEvidence shows that ");
+        StringBuilder finding = new StringBuilder("Evidence shows that ");
         for (int i = 0; i < 12; i++) { // pad so the coverage heuristic (length >= 400) is satisfied
-            note.append("the claim survives scrutiny from multiple angles and independent measurements, ");
+            finding.append("the claim survives scrutiny from multiple angles and independent measurements, ");
         }
-        note.append("as noted by https://one.io/a and corroborated by https://two.io/b with a follow-up in https://three.edu/c.");
+        finding.append("as noted by https://one.io/a and corroborated by https://two.io/b with a follow-up in https://three.edu/c.");
 
-        AtomicInteger callNo = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
-            int n = callNo.incrementAndGet();
-            if (n == 1) {
-                return breakdownJson(1);
-            }
-            return note.toString();
-        });
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(new ResearchRoundNote(List.of(finding.toString()), List.of(), List.of("none")));
         when(llmGateway.streamComplete(anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
                 .thenReturn(Flux.just("ok"));
 
@@ -272,12 +269,9 @@ class ResearchFlowQualityTest {
 
     @Test
     void cancelDuringResearch_stopsPipeline_andPersistsCancelledAtomically() {
-        AtomicInteger callNo = new AtomicInteger();
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenAnswer(inv -> {
-            int n = callNo.incrementAndGet();
-            if (n == 1) {
-                return breakdownJson(2);
-            }
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1"), subTopic(2, "Subtopic 2")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class))).thenAnswer(inv -> {
             // User cancels while the first research round is in flight.
             service.cancelResearch(session.getId());
             return coveredNote();
@@ -295,7 +289,10 @@ class ResearchFlowQualityTest {
 
     @Test
     void cancelDuringReportStream_disposesSubscription_andSkipsCompletedWrite() {
-        when(llmGateway.complete(anyString(), anyString(), any(Double.class))).thenReturn(breakdownJson(1), coveredNote());
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(coveredNote());
         AtomicInteger cancellations = new AtomicInteger();
         // A report stream that never completes — like a long synthesis still in flight.
         Flux<String> stuckStream = Flux.create(sink -> sink.onCancel(cancellations::incrementAndGet));
@@ -322,6 +319,8 @@ class ResearchFlowQualityTest {
         service.processResearchAsync(session.getId(), request(3));
 
         verify(llmGateway, never()).complete(anyString(), anyString(), any(Double.class));
+        verify(llmGateway, never()).completeStructured(anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class));
+        verify(llmGateway, never()).completeStructured(anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class));
         verify(streamService, never()).sendProgress(eq(session.getId()), anyString());
     }
 }
