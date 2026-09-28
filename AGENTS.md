@@ -25,6 +25,11 @@ npm start                     # proxy.conf.json forwards /api → localhost:8080
 # or: npx ng serve --proxy-config proxy.conf.json
 ```
 
+### Deployment (self-hosted runner on the local Ubuntu machine)
+- A self-hosted Actions runner (`abhi-ubuntu`, labels `self-hosted, linux, ubuntu-local`) runs from `~/actions-runner` as the user systemd service `actions-runner`.
+- `.github/workflows/deploy.yml` fires after "Research Agent CI" succeeds on `main` (also manually via workflow dispatch): builds frontend + backend jar in the runner workspace, installs to `/home/abhi/research-agent-deploy/app.jar`, and restarts the user systemd service `research-agent` (API + UI on :8080).
+- Local management: `systemctl --user status|restart research-agent` · runner: `systemctl --user status actions-runner`.
+
 ## Key Implementation Gotchas
 
 - **Spring AI 2.0 OpenAI client timeouts**: the 2.0 rewrite uses the official `openai-java` SDK, whose auto-config defaults `spring.ai.openai.timeout` to **60s** (call/read/write). Long local-LLM calls (final report generation) die at exactly 60s with `OpenAIIoException: Stream failed` / `InterruptedIOException: timeout`. Set `spring.ai.openai.timeout: PT10M` in application.yml, kept in sync with `spring.ai.sse.timeout`.

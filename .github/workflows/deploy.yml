@@ -1,0 +1,81 @@
+name: Deploy to local Ubuntu
+
+# Deploys to the self-hosted runner on abhi's Ubuntu machine after CI passes.
+# The runner checks out the commit CI validated, builds frontend + backend jar,
+# installs it to /home/abhi/research-agent-deploy and restarts the systemd
+# user service `research-agent` (serves API + UI on :8080).
+
+on:
+  workflow_run:
+    workflows: ["Research Agent CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to deploy
+        required: false
+        default: main
+
+concurrency:
+  group: deploy-local-ubuntu
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, ubuntu-local]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: research-agent-ui/package-lock.json
+
+      - name: Build frontend
+        working-directory: research-agent-ui
+        run: npm ci && npm run build
+
+      - name: Copy frontend into backend static resources
+        run: |
+          mkdir -p research-agent-backend/src/main/resources/static
+          cp -r research-agent-ui/dist/research-agent-ui/browser/* \
+            research-agent-backend/src/main/resources/static/
+
+      - name: Build backend jar (tests already verified by CI)
+        working-directory: research-agent-backend
+        run: mvn -DskipTests package
+
+      - name: Install and restart service
+        run: |
+          mkdir -p /home/abhi/research-agent-deploy
+          cp research-agent-backend/target/research-agent-0.0.1-SNAPSHOT.jar \
+            /home/abhi/research-agent-deploy/app.jar
+          systemctl --user restart research-agent
+
+      - name: Verify service is up
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/research/history > /dev/null; then
+              echo "Research Agent is up on :8080"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Service did not come up in time"
+          journalctl --user -u research-agent --no-pager -n 40
+          exit 1
