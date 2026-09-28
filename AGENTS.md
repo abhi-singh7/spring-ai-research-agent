@@ -29,6 +29,7 @@ npm start                     # proxy.conf.json forwards /api → localhost:8080
 - A self-hosted Actions runner (`abhi-ubuntu`, labels `self-hosted, linux, ubuntu-local`) runs from `~/actions-runner` as the user systemd service `actions-runner`.
 - `.github/workflows/deploy.yml` fires after "Research Agent CI" succeeds on `main` (also manually via workflow dispatch): builds frontend + backend jar in the runner workspace, installs to `/home/abhi/research-agent-deploy/app.jar`, and restarts the user systemd service `research-agent` (API + UI on :8080).
 - Local management: `systemctl --user status|restart research-agent` · runner: `systemctl --user status actions-runner`.
+- Full line-by-line explanation of both workflows, the runner setup, and day-2 operations commands: `docs/ci-cd-deployment.md`.
 
 ## Key Implementation Gotchas
 
