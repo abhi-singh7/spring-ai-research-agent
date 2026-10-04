@@ -82,11 +82,11 @@ class OrchestratorPersistenceIntegrationTest {
         UUID sessionId = session.getId();
 
         // LLM stubs per phase (temperatures match the service constants: planning 0.3 / research 0.7 / synthesis 0.4)
-        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
                 .thenReturn(breakdownPlan());
-        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
                 .thenReturn(researchNote());
-        when(llmGateway.streamComplete(anyString(), anyString(), eq(0.4)))
+        when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(0.4)))
                 .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
 
         // Act: real @Async execution on the research executor
@@ -130,9 +130,9 @@ class OrchestratorPersistenceIntegrationTest {
         UUID sessionId = session.getId();
 
         AtomicInteger researchCalls = new AtomicInteger();
-        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
                 .thenReturn(breakdownPlan());
-        when(llmGateway.completeStructured(anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class))).thenAnswer(inv -> {
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class))).thenAnswer(inv -> {
             if (researchCalls.incrementAndGet() == 1) {
                 // User cancels while the first research LLM call is in flight.
                 orchestrator.cancelResearch(sessionId);

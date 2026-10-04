@@ -1,6 +1,8 @@
 package com.researchagent.config;
 
 import tools.jackson.databind.ObjectMapper;
+import com.researchagent.advisor.LoggingAdvisor;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.tool.McpToolRouter;
 import com.researchagent.tool.UrlReaderTool;
 import com.researchagent.tool.WebSearchTool;
@@ -44,13 +46,25 @@ public class ChatClientConfig {
      * via the toolcallback mechanism (no manual configuration needed).
      */
 
+    /**
+     * Records every LLM request/response to MongoDB (collection {@code llm_logs}). Must implement both
+     * CallAdvisor and StreamAdvisor — Spring AI routes .call() and .stream() through separate advisor chains.
+     */
+    @Bean
+    LoggingAdvisor loggingAdvisor(LlmLogRepository llmLogRepository) {
+        return new LoggingAdvisor(llmLogRepository);
+    }
+
     @Bean
     ChatClient chatClient(ChatClient.Builder builder,
                           WebSearchTool webSearchTool,
-                          UrlReaderTool urlReaderTool) {
+                          UrlReaderTool urlReaderTool,
+                          LoggingAdvisor loggingAdvisor) {
 
         return builder
                 .defaultTools(webSearchTool, urlReaderTool)
+                // Spring AI 2.0 does NOT auto-register Advisor beans on the ChatClient.Builder — wire explicitly.
+                .defaultAdvisors(loggingAdvisor)
                 .build();
     }
 

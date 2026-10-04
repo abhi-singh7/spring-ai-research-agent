@@ -30,8 +30,14 @@ spring.devtools.livereload.enabled: false
 # SSE timeout (milliseconds) - shorter for tests
 spring.ai.sse.timeout: 30000
 
-# Abandoned session cleanup scheduler — run every 1 minute in tests
+# JWT authentication for tests (mirrors src/main/resources/application.yml)
 app:
+  security:
+    jwt:
+      secret: test-only-jwt-secret-32-bytes-minimum!!
+      expiration-seconds: 3600
+      issuer: research-agent
+  # Abandoned session cleanup scheduler — run every 1 minute in tests
   cleanup:
     stale-after: PT1H
     interval: PT1M
