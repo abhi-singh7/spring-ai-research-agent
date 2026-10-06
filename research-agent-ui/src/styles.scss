@@ -90,3 +90,181 @@ a, button, input, select, mat-form-field {
 .error-snackbar::ng-deep .mdc-button__label {
   color: white !important;
 }
+
+/* ============================================================
+   Report document typography (.report-doc)
+   Applied to the <markdown> element inside report-viewer.
+   Single source of truth for both the embedded report card
+   and the chrome-less full-page document view.
+   ============================================================ */
+.report-doc {
+  font-size: var(--report-font-size, 16px);
+  line-height: 1.75;
+  color: #24292f;
+  max-width: 78ch;
+
+  > * { margin-top: 0; }
+
+  p { margin: 0 0 1em; }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: #0f0f23;
+    line-height: 1.3;
+    scroll-margin-top: 24px;
+  }
+
+  h1 { font-size: 1.6em; font-weight: 700; margin: 1.4em 0 0.8em; }
+
+  h2 {
+    font-size: 1.45em;
+    font-weight: 700;
+    margin: 1.7em 0 0.9em;
+    padding-bottom: 8px;
+    border-bottom: 2px solid rgba(99, 102, 241, 0.25);
+  }
+
+  h3 { font-size: 1.17em; font-weight: 600; margin: 1.4em 0 0.7em; }
+  h4 { font-size: 1.05em; font-weight: 600; margin: 1.2em 0 0.6em; }
+
+  ul, ol { padding-left: 1.7em; margin: 0.4em 0 1em; }
+  li { margin: 0.35em 0; }
+  li::marker { color: #6366f1; }
+  li > ul, li > ol { margin: 0.2em 0; }
+
+  strong { font-weight: 700; color: inherit; }
+
+  a {
+    color: #4f46e5;
+    text-decoration: none;
+    word-break: break-word;
+  }
+  a:hover { text-decoration: underline; }
+
+  /* Citation chips ([1][2] markers, injected as <sup class="cite-ref">) */
+  .cite-ref {
+    font-size: 0.68em;
+    font-weight: 600;
+    color: #4f46e5;
+    background: rgba(99, 102, 241, 0.09);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin: 0 2px;
+    vertical-align: super;
+    white-space: nowrap;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.1em 0;
+    font-size: 0.92em;
+    line-height: 1.55;
+  }
+  th, td {
+    border: 1px solid #e3e6ea;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: rgba(99, 102, 241, 0.08);
+    font-weight: 600;
+    color: #0f0f23;
+  }
+  tbody tr:nth-child(even) { background: rgba(99, 102, 241, 0.035); }
+
+  blockquote {
+    margin: 1em 0;
+    padding: 0.5em 1em;
+    border-left: 3px solid rgba(99, 102, 241, 0.4);
+    background: rgba(99, 102, 241, 0.04);
+    color: #57606a;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: rgba(99, 102, 241, 0.07);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #e3e6ea;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 1em 0;
+    overflow-x: auto;
+    white-space: pre !important; /* override the global pre-wrap rule inside reports */
+  }
+  pre code { background: none; padding: 0; font-size: 0.9em; }
+
+  hr {
+    border: none;
+    border-top: 1px solid #e3e6ea;
+    margin: 2em 0;
+  }
+}
+
+/* Serif body option (toggled from the report toolbar) */
+.report-shell[data-serif='true'] .report-doc {
+  font-family: Georgia, 'Times New Roman', 'Noto Serif', serif;
+}
+
+/* Report dark mode */
+@media (prefers-color-scheme: dark) {
+  /* The Material theme is light-only, so mat-card keeps its white surface in OS
+     dark mode — force a dark surface here or the light report text is unreadable. */
+  .report-card {
+    background-color: #1c1f26 !important;
+    border-color: #3a3f4a !important;
+  }
+
+  .report-doc {
+    color: #d5d9de;
+
+    h1, h2, h3, h4, h5, h6 { color: #f0f2f5; }
+    h2 { border-bottom-color: rgba(129, 140, 248, 0.4); }
+
+    li::marker { color: #818cf8; }
+    a { color: #a5b4fc; }
+
+    .cite-ref { color: #c7d2fe; background: rgba(129, 140, 248, 0.16); }
+
+    th, td { border-color: #3a3f4a; }
+    th { background: rgba(129, 140, 248, 0.12); color: #f0f2f5; }
+    tbody tr:nth-child(even) { background: rgba(129, 140, 248, 0.06); }
+
+    blockquote { border-left-color: rgba(129, 140, 248, 0.5); background: rgba(129, 140, 248, 0.08); color: #aab2bd; }
+
+    code { background: rgba(129, 140, 248, 0.14); }
+    pre { background: #1c1f26; border-color: #3a3f4a; }
+
+    hr { border-top-color: #3a3f4a; }
+  }
+}
+
+/* Print: clean paper layout for reports */
+@media print {
+  .report-toc,
+  .report-toolbar,
+  .reading-progress,
+  .doc-topbar,
+  .back-link { display: none !important; }
+
+  .report-card {
+    box-shadow: none !important;
+    border: none !important;
+    background: #fff !important;
+  }
+  .report-content { max-width: 100% !important; padding: 0 !important; }
+  .report-doc { color: #000 !important; max-width: 100% !important; }
+  .report-doc a { color: #000 !important; }
+  .report-doc h2 { border-bottom-color: #999 !important; }
+
+  table { page-break-inside: auto; }
+  tr { page-break-inside: avoid; }
+  h1, h2, h3 { page-break-after: avoid; }
+}

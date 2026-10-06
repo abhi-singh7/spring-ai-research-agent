@@ -34,6 +34,15 @@ export const routes: Routes = [
         .then(m => m.ResearchHistoryComponent)
   },
 
+  // Full-page document view — MUST come BEFORE research/history/:sessionId
+  {
+    path: 'research/history/:sessionId/report',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/report-document/report-document.component')
+        .then(m => m.ReportDocumentComponent)
+  },
+
   {
     path: 'research/history/:sessionId',
     canActivate: [authGuard],

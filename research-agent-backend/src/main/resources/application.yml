@@ -10,7 +10,7 @@ spring:
       # Sets call/read/write timeouts; keep in sync with spring.ai.sse.timeout below.
       timeout: 600s # a bug in spring-ai 2.0.0-beta.1 prevents this from being applied to the OpenAI client, so we also set directly in the openAI chatOptions bean
       chat:
-          model: ${LLM_MODEL:Qwen3.8-27B-GSQ-RCO-GGUF:IQ3_S}
+          model: ${LLM_MODEL:ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
           n: 1
