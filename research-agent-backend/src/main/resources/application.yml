@@ -10,7 +10,7 @@ spring:
       # Sets call/read/write timeouts; keep in sync with spring.ai.sse.timeout below.
       timeout: 600s # a bug in spring-ai 2.0.0-beta.1 prevents this from being applied to the OpenAI client, so we also set directly in the openAI chatOptions bean
       chat:
-          model: ${LLM_MODEL:Ornith-1.5-35B-A3B-GGUF:Q4_K_M}
+          model: ${LLM_MODEL:ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
           n: 1
@@ -61,6 +61,14 @@ spring.ai.sse.timeout: 600000
 
 # Abandoned session cleanup scheduler
 app:
+  # JWT authentication (openspec/changes/add-jwt-authentication)
+  # secret: DEV-ONLY default — override in production via the JWT_SECRET env var.
+  # JwtService refuses to start with a secret shorter than 32 bytes.
+  security:
+    jwt:
+      secret: ${JWT_SECRET:dev-only-research-agent-jwt-secret-change-me!}
+      expiration-seconds: 28800   # 8 h — survives a work session, bounds replay value
+      issuer: research-agent
   research:
     default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
   cleanup:

@@ -3,6 +3,7 @@ import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { environment } from '../../../environments/environment';
 import { Subject, Observable, tap } from 'rxjs';
 import * as ResearchModels from '../models/research.model';
+import { AuthService } from './auth.service';
 
 @Injectable({ providedIn: 'root' })
 export class ResearchService {
@@ -10,6 +11,7 @@ export class ResearchService {
   private readonly baseUrl = environment.apiUrl + '/api/research';
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
+  private auth = inject(AuthService);
 
   // Reactive State via Signals
   /** Currently active research session */
@@ -74,7 +76,14 @@ export class ResearchService {
   connectSse(sessionId: string, streamUrl?: string): void {
     this.disconnectSse();
 
-    const url = streamUrl || `${this.baseUrl}/stream/${sessionId}`;
+    // EventSource cannot set headers, so the JWT rides the query string (Phase 1 backend contract).
+    // Built here — not in components — because reconnects call connectSse(sessionId) without a URL;
+    // reading the token at connect time also picks up a fresh login mid-session.
+    const base = streamUrl || `${this.baseUrl}/stream/${sessionId}`;
+    const token = this.auth.getToken();
+    const url = token
+      ? `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+      : base;
     this.sseSource = new EventSource(url);
     this.isStreaming.set(true);
 
@@ -248,6 +257,15 @@ export class ResearchService {
     // Cleanup on component destroy
     const cleanup = () => this.disconnectSse();
     this.destroyRef.onDestroy(cleanup);
+  }
+
+  /** Stop all in-flight streaming/polling and reset session state (logout / session expiry). */
+  clearActiveWork(): void {
+    this.disconnectSse();
+    this.stopPolling();
+    this._researchStepsSignal.set([]);
+    this._reportContentSignal.set('');
+    this.researchSession.set(null);
   }
 
   /** Disconnect the current SSE connection */

@@ -49,6 +49,11 @@ import { trigger, transition, style, animate } from '@angular/animations';
         <!-- Report viewer — only if report content exists -->
         @if (researchSession()!.finalReport) {
           <div [@fadeIn] class="report-section">
+            <div class="report-actions">
+              <a mat-stroked-button routerLink="/research/history/{{ researchSession()!.id }}/report">
+                <mat-icon>open_in_full</mat-icon> Open full page
+              </a>
+            </div>
             <report-viewer [content]="researchSession()!.finalReport!" />
           </div>
         }
@@ -102,6 +107,11 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .steps-section { margin-bottom: 24px; }
     .report-section { margin-bottom: 24px; }
     .followup-section { margin-top: 8px; }
+
+    /* Full-page document action */
+    .report-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+    .report-actions button { color: #4f46e5; font-weight: 500; }
+    .report-actions mat-icon { font-size: 18px; width: 18px; height: 18px; }
 
     /* Empty state */
     .empty-state { text-align: center; padding: 40px; color: #999; font-size: 1rem; }

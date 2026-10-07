@@ -315,13 +315,14 @@ public class ResearchOrchestratorService {
                 - Titles must be concise (3–10 words); descriptions explain what to investigate (1–3 sentences).
                 - Cover foundational concepts and advanced/practical aspects when appropriate; prioritise the most important dimensions for broad topics, split narrow topics into logical investigative components.
                 - For each sub-topic provide 2–4 CONCRETE web search queries that a search engine would return good pages for: specific keyword phrases (not full questions), varying in focus so they surface different sources together.
+                - If you do not know about the topic, do a web search for it first, then break it down based on what you find.
                 """.formatted(count, count);
 
         List<SubTopic> topics;
         try {
             // Spring AI appends the JSON schema for List<SubTopic> to this prompt and parses the answer into it —
             // no hand-rolled "return only JSON" parsing on our side.
-            topics = llmStructuredCallWithRetry(handle, system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING, SUBTOPIC_LIST_TYPE);
+            topics = llmStructuredCallWithRetry(handle, sessionId, system, "Research Topic: \"" + topic + "\"", TEMP_PLANNING, SUBTOPIC_LIST_TYPE);
         } catch (RuntimeException e) {
             log.error("Breakdown failed after retries for session {}: {}", sessionId, e.getMessage());
             // Last resort: a single broad research pass over the whole topic.
@@ -385,7 +386,7 @@ public class ResearchOrchestratorService {
             String user = buildRoundUserMessage(subTopic, note.toString(), sourcesByUrl);
 
             int urlsBefore = sourcesByUrl.size();
-            String roundText = researchRoundText(handle, subTopic, round, system, user); // throws after final attempt (or on cancel)
+            String roundText = researchRoundText(handle, sessionId, subTopic, round, system, user); // throws after final attempt (or on cancel)
 
             if (note.length() > 0) {
                 note.append("\n\n").append(roundText);
@@ -532,7 +533,7 @@ public class ResearchOrchestratorService {
         // Use AtomicReference to capture the full report content during streaming
         java.util.concurrent.atomic.AtomicReference<StringBuilder> reportBuffer = new java.util.concurrent.atomic.AtomicReference<>(new StringBuilder());
 
-        Flux<String> reportStream = llmGateway.streamComplete(SYNTHESIS_PROMPT, input.toString(), TEMP_SYNTHESIS);
+        Flux<String> reportStream = llmGateway.streamComplete(sessionId, SYNTHESIS_PROMPT, input.toString(), TEMP_SYNTHESIS);
 
         // Stream the final report back to the frontend and accumulate content. Terminal callbacks run later
         // (on a Reactor thread) and are guarded by ownsSessionState(): if the user cancelled in between, we must
@@ -607,16 +608,16 @@ public class ResearchOrchestratorService {
      * The total attempt budget stays {@link #MAX_LLM_ATTEMPTS}. Throws IllegalStateException once all
      * attempts are exhausted so callers can decide how to degrade.
      */
-    private String researchRoundText(ResearchCancellationRegistry.CancellationHandle handle, SubTopic subTopic, int round,
+    private String researchRoundText(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, SubTopic subTopic, int round,
                                      String systemPrompt, String userMessage) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
             handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
             try {
                 if (attempt == 1) {
-                    return renderRoundNote(llmGateway.completeStructured(systemPrompt, userMessage, TEMP_RESEARCH, ResearchRoundNote.class));
+                    return renderRoundNote(llmGateway.completeStructured(sessionId, systemPrompt, userMessage, TEMP_RESEARCH, ResearchRoundNote.class));
                 }
-                return llmGateway.complete(systemPrompt, userMessage, TEMP_RESEARCH).trim();
+                return llmGateway.complete(sessionId, systemPrompt, userMessage, TEMP_RESEARCH).trim();
             } catch (RuntimeException e) {
                 last = e;
                 log.warn("Research round {} attempt {}/{} failed for sub-topic '{}': {}",
@@ -636,13 +637,13 @@ public class ResearchOrchestratorService {
      * Run a structured-output completion with bounded retries: 1 initial attempt + 2 retries with growing backoff.
      * Throws IllegalStateException once all attempts are exhausted so callers can decide how to degrade.
      */
-    private <T> T llmStructuredCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, String systemPrompt,
+    private <T> T llmStructuredCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, String systemPrompt,
                                              String userMessage, Double temperature, ParameterizedTypeReference<T> type) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
             handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
             try {
-                return llmGateway.completeStructured(systemPrompt, userMessage, temperature, type);
+                return llmGateway.completeStructured(sessionId, systemPrompt, userMessage, temperature, type);
             } catch (RuntimeException e) {
                 last = e;
                 log.warn("Structured LLM call attempt {}/{} failed: {}", attempt, MAX_LLM_ATTEMPTS, e.getMessage());
@@ -848,7 +849,7 @@ public class ResearchOrchestratorService {
                 """.formatted(session.getTopic(), session.getFinalReport() != null ? session.getFinalReport() : "No report available", question);
 
         try {
-            return llmGateway.complete(prompt, "", TEMP_PLANNING);
+            return llmGateway.complete(sessionId, prompt, "", TEMP_PLANNING);
         } catch (Exception e) {
             log.error("Error processing follow-up for session {}", sessionId, e);
             throw new RuntimeException("Failed to process follow-up: " + e.getMessage());

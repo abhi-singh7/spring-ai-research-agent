@@ -16,6 +16,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import org.springframework.security.test.context.support.WithMockUser;
 
 /**
  * Tests for the bulk-delete endpoint's rollback behavior.
@@ -24,6 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * and that empty/invalid requests return 400.
  */
 @WebMvcTest(ResearchController.class)
+@WithMockUser
 class ResearchControllerBulkDeleteHistoryRollbackTest {
 
     @Autowired

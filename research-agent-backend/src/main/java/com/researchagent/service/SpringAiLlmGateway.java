@@ -1,5 +1,6 @@
 package com.researchagent.service;
 
+import com.researchagent.advisor.LoggingAdvisor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.ai.openai.OpenAiChatOptions;
@@ -7,6 +8,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.util.UUID;
 
 /**
  * Spring AI implementation of {@link LlmGateway}.
@@ -22,6 +24,11 @@ import java.time.Duration;
  * tool-call rounds) is parsed into it. The prompt-based approach is used deliberately — NOT
  * {@code useProviderStructuredOutput()} — because the backend is a local LLM served through an
  * OpenAI-compatible endpoint where native structured-output support is unreliable.</p>
+ *
+ * <p>The research session id (when present) is attached to the per-request advisor context under
+ * {@link LoggingAdvisor#SESSION_ID_CONTEXT_KEY}, so every LLM call of a session lands in the
+ * {@code llm_logs} collection tagged with that session. The value travels with the request object —
+ * no ThreadLocal — which keeps attribution correct even when stream callbacks run on Reactor threads.</p>
  */
 @Component
 public class SpringAiLlmGateway implements LlmGateway {
@@ -33,29 +40,29 @@ public class SpringAiLlmGateway implements LlmGateway {
     }
 
     @Override
-    public String complete(String systemPrompt, String userMessage, Double temperature) {
-        return prompt(systemPrompt, userMessage, temperature)
+    public String complete(UUID sessionId, String systemPrompt, String userMessage, Double temperature) {
+        return prompt(sessionId, systemPrompt, userMessage, temperature)
                 .call()
                 .content();
     }
 
     @Override
-    public Flux<String> streamComplete(String systemPrompt, String userMessage, Double temperature) {
-        return prompt(systemPrompt, userMessage, temperature)
+    public Flux<String> streamComplete(UUID sessionId, String systemPrompt, String userMessage, Double temperature) {
+        return prompt(sessionId, systemPrompt, userMessage, temperature)
                 .stream()
                 .content();
     }
 
     @Override
-    public <T> T completeStructured(String systemPrompt, String userMessage, Double temperature, Class<T> type) {
-        return prompt(systemPrompt, userMessage, temperature)
+    public <T> T completeStructured(UUID sessionId, String systemPrompt, String userMessage, Double temperature, Class<T> type) {
+        return prompt(sessionId, systemPrompt, userMessage, temperature)
                 .call()
                 .entity(type);
     }
 
     @Override
-    public <T> T completeStructured(String systemPrompt, String userMessage, Double temperature, ParameterizedTypeReference<T> type) {
-        return prompt(systemPrompt, userMessage, temperature)
+    public <T> T completeStructured(UUID sessionId, String systemPrompt, String userMessage, Double temperature, ParameterizedTypeReference<T> type) {
+        return prompt(sessionId, systemPrompt, userMessage, temperature)
                 .call()
                 .entity(type);
     }
@@ -64,10 +71,14 @@ public class SpringAiLlmGateway implements LlmGateway {
      * Build the shared fluent request. Per-request options only carry a temperature when requested —
      * Spring AI merges them over the builder defaults, so the configured model always applies.
      */
-    private ChatClient.ChatClientRequestSpec prompt(String systemPrompt, String userMessage, Double temperature) {
+    private ChatClient.ChatClientRequestSpec prompt(UUID sessionId, String systemPrompt, String userMessage, Double temperature) {
         ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
                 .system(systemPrompt)
                 .user(userMessage);
+        if (sessionId != null) {
+            // Attach the session id to the advisor context so LoggingAdvisor can tag this call's log entry.
+            spec.advisors(a -> a.param(LoggingAdvisor.SESSION_ID_CONTEXT_KEY, sessionId));
+        }
         if (temperature != null) {
             spec.options(temperatureOptions(temperature));
         }
