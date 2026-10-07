@@ -14,7 +14,7 @@ Full-stack research tool: user submits a topic → LLM breaks it into sub-topics
 ```bash
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 mvn spring-boot:run          # port 8080 default
-curl http://localhost:8080/api/research/history   # verify
+curl http://localhost:8080/api/health             # unauthenticated liveness probe (/api/research/** needs a JWT)
 ```
 
 Requires MongoDB (`spring.mongodb.uri`, default `mongodb://localhost:27017/research-agent`) and a local LLM endpoint — configured in `src/main/resources/application.yml`. Default model: `google/gemma-4-26b-a4b-qat` (commented alternative: `qwopus3.6-35b-a3b-v1`).

@@ -70,7 +70,10 @@ jobs:
       - name: Verify service is up
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/api/research/history > /dev/null; then
+            # /api/health is the unauthenticated liveness probe — every /api/research/**
+            # endpoint requires a Bearer JWT since the auth workstream, so a 401 there
+            # would read as "down" to curl -f even though the app is up.
+            if curl -sf http://localhost:8080/api/health > /dev/null; then
               echo "Research Agent is up on :8080"
               exit 0
             fi

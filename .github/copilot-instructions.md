@@ -21,8 +21,8 @@ mvn package -DskipTests
 # Start the backend on port 8080 (default)
 mvn spring-boot:run
 
-# Verify it's running
-curl http://localhost:8080/api/research/history
+# Verify it's running (unauthenticated liveness probe — /api/research/** requires a JWT)
+curl http://localhost:8080/api/health
 ```
 
 ### Frontend (`research-agent-ui/`)

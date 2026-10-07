@@ -23,8 +23,8 @@ export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 # Start backend on port 8080 (default)
 mvn spring-boot:run
 
-# Verify running
-curl http://localhost:8080/api/research/history
+# Verify running (unauthenticated liveness probe — /api/research/** requires a JWT)
+curl http://localhost:8080/api/health
 ```
 
 Requires MongoDB (`mongodb://localhost:27017/research-agent` — the database is created automatically) and a local LLM endpoint, configured in `application.yml`.
