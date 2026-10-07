@@ -20,9 +20,11 @@ import java.nio.charset.StandardCharsets;
  * Stateless JWT security chain (openspec/changes/add-jwt-authentication).
  *
  * <ul>
- *   <li>{@code /api/auth/**} (register/login/me) and {@code /api/research/stream/**} are permitted
- *       through the filter chain — register/login need no prior auth, and the stream endpoint
- *       self-validates its {@code ?token=} query parameter before opening the SSE connection.</li>
+ *   <li>{@code /api/auth/**} (register/login/me), {@code /api/health} and
+ *       {@code /api/research/stream/**} are permitted through the filter chain — register/login
+ *       need no prior auth, the health probe is an unauthenticated liveness check for deploy
+ *       gates, and the stream endpoint self-validates its {@code ?token=} query parameter
+ *       before opening the SSE connection.</li>
  *   <li>Every other request requires a valid Bearer JWT (populated by {@link JwtAuthFilter}).</li>
  *   <li>CSRF is disabled: no auth-carrying cookies exist (tokens ride in headers / one query param),
  *       so the classic CSRF surface does not. Re-enable if auth ever moves to httpOnly cookies.</li>
@@ -51,7 +53,7 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/**", "/api/research/stream/**").permitAll()
+                        .requestMatchers("/api/auth/**", "/api/health", "/api/research/stream/**").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, e) ->

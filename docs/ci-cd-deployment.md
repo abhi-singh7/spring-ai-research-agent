@@ -424,7 +424,10 @@ The actual deployment, three lines:
       - name: Verify service is up
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/api/research/history > /dev/null; then
+            # /api/health is the unauthenticated liveness probe — every /api/research/**
+            # endpoint requires a Bearer JWT since the auth workstream, so a 401 there
+            # would read as "down" to curl -f even though the app is up.
+            if curl -sf http://localhost:8080/api/health > /dev/null; then
               echo "Research Agent is up on :8080"
               exit 0
             fi
@@ -489,7 +492,8 @@ needed right now. Add an `EnvironmentFile=` line if you ever externalize secrets
 4. Steps: checkout `1225c45c` → Node 20 + npm build → copy into `static/` →
    `mvn -DskipTests package` → jar copied to `/home/abhi/research-agent-deploy/app.jar`
    → `systemctl --user restart research-agent`.
-5. Health gate polled `:8080/api/research/history`, got 200 → run green.
+5. Health gate polled `:8080/api/health` (unauthenticated liveness probe —
+   `/api/research/**` requires a Bearer JWT since the auth workstream), got 200 → run green.
 6. App now served by systemd (active since 17:41 IST), UI + API on :8080.
 
 ---
@@ -513,7 +517,7 @@ systemctl --user status actions-runner
 gh api repos/abhi-singh7/spring-ai-research-agent/actions/runners   # online?
 
 # Smoke tests
-curl -s http://localhost:8080/api/research/history | head -c 200
+curl -s http://localhost:8080/api/health            # unauthenticated liveness probe
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/
 ```
 

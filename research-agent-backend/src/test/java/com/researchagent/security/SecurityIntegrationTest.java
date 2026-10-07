@@ -50,6 +50,15 @@ class SecurityIntegrationTest {
     }
 
     @Test
+    void healthEndpoint_isOpenWithoutToken() throws Exception {
+        // Unauthenticated liveness probe used by the deploy workflow's health gate —
+        // must pass through the security chain WITHOUT a Bearer token.
+        mockMvc.perform(get("/api/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
     void garbageTokenOnResearchCall_returns401Json() throws Exception {
         mockMvc.perform(get("/api/research/history").header("Authorization", "Bearer not.a.real.token"))
                 .andExpect(status().isUnauthorized())
