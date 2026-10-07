@@ -50,6 +50,26 @@ class SecurityIntegrationTest {
     }
 
     @Test
+    void spaShellAndDeepLinksArePublicWithoutToken() throws Exception {
+        // The Angular build is served from this jar's static resources. The app shell MUST load
+        // without a Bearer token — the browser can't send one on page/asset loads. Regression:
+        // anyRequest().authenticated() 401-walled index.html and every asset, killing the whole
+        // UI including /login in the integrated deploy.
+        //
+        // Status-only assertions: under MockMvc this Spring Boot 4 setup returns an empty body
+        // for the welcome page / forward dispatch (verified live on real Tomcat that both serve
+        // index.html — see docs/ci-cd-deployment.md smoke tests). The regression signal is the
+        // status: these were 401 before the fix, 200 after.
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk());
+
+        // Deep links / refreshes must be handled (SpaForwardController forwards to the app
+        // shell), not 401 from the security chain nor 404 from the static handler.
+        mockMvc.perform(get("/research/history"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void healthEndpoint_isOpenWithoutToken() throws Exception {
         // Unauthenticated liveness probe used by the deploy workflow's health gate —
         // must pass through the security chain WITHOUT a Bearer token.

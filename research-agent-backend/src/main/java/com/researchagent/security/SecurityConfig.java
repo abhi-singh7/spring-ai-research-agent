@@ -25,7 +25,12 @@ import java.nio.charset.StandardCharsets;
  *       need no prior auth, the health probe is an unauthenticated liveness check for deploy
  *       gates, and the stream endpoint self-validates its {@code ?token=} query parameter
  *       before opening the SSE connection.</li>
- *   <li>Every other request requires a valid Bearer JWT (populated by {@link JwtAuthFilter}).</li>
+ *   <li>Only {@code /api/**} requires a valid Bearer JWT (populated by {@link JwtAuthFilter}).
+ *       The SPA shell ({@code index.html}, JS/CSS bundles) and client-side routes are PUBLIC:
+ *       the browser cannot send a Bearer header on page/asset loads, so protecting them would
+ *       401-wall the entire UI including {@code /login}. The Angular app authenticates via
+ *       {@code /api/auth/login} and attaches the token to API calls only; unauthenticated API
+ *       calls get 401 and the app redirects to login.</li>
  *   <li>CSRF is disabled: no auth-carrying cookies exist (tokens ride in headers / one query param),
  *       so the classic CSRF surface does not. Re-enable if auth ever moves to httpOnly cookies.</li>
  * </ul>
@@ -53,8 +58,12 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Order matters — first match wins: the public API paths stay open,
+                        // every OTHER /api/** endpoint demands a Bearer JWT.
                         .requestMatchers("/api/auth/**", "/api/health", "/api/research/stream/**").permitAll()
-                        .anyRequest().authenticated())
+                        .requestMatchers("/api/**").authenticated()
+                        // SPA shell + static assets are public (see class javadoc).
+                        .anyRequest().permitAll())
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, e) ->
                                 writeJsonError(response, HttpStatus.UNAUTHORIZED, "Authentication required"))
