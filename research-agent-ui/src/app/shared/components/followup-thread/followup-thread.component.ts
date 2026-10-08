@@ -36,9 +36,7 @@ import { FollowUpExchange } from '../../../core/models/research.model';
             </div>
             <div class="message-row assistant">
               <div class="bubble assistant-bubble">
-                <!-- .report-doc = the global report typography from styles.scss, so answers
-                     read exactly like the report on the history page (incl. dark mode). -->
-                <markdown class="report-doc" [data]="exchange.answer"></markdown>
+                <markdown class="followup-answer-md" [data]="exchange.answer"></markdown>
               </div>
             </div>
           } @empty {
@@ -75,8 +73,11 @@ import { FollowUpExchange } from '../../../core/models/research.model';
     </mat-card>
   `,
   styles: [`
+    /* Like the step-list / session-info cards on the history page: a plain themed
+       (white) mat-card in BOTH light and dark OS modes — no forced dark surface,
+       so the themed dark text (title, input, label) is always readable. */
     .followup-thread-card { border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
-    .followup-thread-card mat-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #0f0f23; }
+    .followup-thread-card mat-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
     .followup-thread-card mat-card-title mat-icon { color: #6366f1; }
 
     .thread { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; min-height: 24px; }
@@ -91,34 +92,26 @@ import { FollowUpExchange } from '../../../core/models/research.model';
     .assistant-bubble { background-color: #f1f3f9; color: #24292f; border-bottom-left-radius: 4px; }
     .assistant-bubble.waiting { display: flex; align-items: center; justify-content: center; padding: 12px; }
 
-    /* Answer markdown reuses the global .report-doc typography — same look as the
-       history page report. Drop its width/font caps so it fits the bubble. */
-    .assistant-bubble .report-doc { max-width: none; font-size: inherit; line-height: 1.6; }
-    .assistant-bubble .report-doc > :first-child { margin-top: 0; }
-    .assistant-bubble .report-doc > :last-child { margin-bottom: 0; }
+    /* Answer markdown: fixed dark-on-light typography, readable on the light bubble in
+       both OS modes. Deliberately NOT .report-doc — that class flips to light text in
+       OS dark mode and would vanish on the light bubble. */
+    .assistant-bubble .followup-answer-md { line-height: 1.6; color: #24292f; }
+    .assistant-bubble .followup-answer-md > :first-child { margin-top: 0; }
+    .assistant-bubble .followup-answer-md > :last-child { margin-bottom: 0; }
+    .assistant-bubble .followup-answer-md p { margin: 0 0 0.7em; }
+    .assistant-bubble .followup-answer-md :is(h1, h2, h3, h4) { color: #0f0f23; font-size: 1.05em; margin: 0.8em 0 0.4em; }
+    .assistant-bubble .followup-answer-md ul,
+    .assistant-bubble .followup-answer-md ol { padding-left: 1.5em; margin: 0.4em 0 0.7em; }
+    .assistant-bubble .followup-answer-md a { color: #4f46e5; word-break: break-word; }
+    .assistant-bubble .followup-answer-md code { background: rgba(99, 102, 241, 0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+    .assistant-bubble .followup-answer-md pre { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; padding: 10px 12px; margin: 0.7em 0; overflow-x: auto; }
+    .assistant-bubble .followup-answer-md pre code { background: none; padding: 0; }
 
     .composer { display: flex; flex-direction: column; gap: 4px; }
     .full-width { width: 100%; }
     .composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 
     .thread-error { color: #c62828; font-size: 0.85rem; margin: 8px 0 0; }
-
-    /* The Material theme is light-only, so in OS dark mode mat-card keeps its white
-       surface — force a dark one, exactly like .report-card does in styles.scss, or
-       the (dark-themed) text is unreadable. */
-    @media (prefers-color-scheme: dark) {
-      .followup-thread-card { background-color: #1c1f26 !important; border-color: #3a3f4a !important; }
-      .followup-thread-card mat-card-title { color: #f0f2f5; }
-      .user-bubble { background-color: #4f46e5; }
-      .assistant-bubble { background-color: rgba(129, 140, 248, 0.1); color: #d5d9de; }
-      .empty-thread { color: #8b919c; }
-      .thread-error { color: #ef9a9a; }
-
-      /* Composer input/label stay themed light — make them legible on the dark card. */
-      :host ::ng-deep .mat-form-field { --mdc-outlined-textfield-outline-color: #3a3f4a; }
-      :host ::ng-deep .mat-form-field-label,
-      :host ::ng-deep .mat-form-field textarea { color: #d5d9de; }
-    }
   `]
 })
 export class FollowUpThreadComponent {
