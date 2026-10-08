@@ -4,7 +4,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { ReportViewerComponent } from '../../shared/components/report-viewer/report-viewer.component';
-import { FollowUpFormComponent } from '../../shared/components/followup-form/followup-form.component';
+import { FollowUpThreadComponent } from '../../shared/components/followup-thread/followup-thread.component';
 import { StepListComponent } from '../../shared/components/step-list/step-list.component';
 import { ResearchService } from '../../core/services/research.service';
 import { trigger, transition, style, animate } from '@angular/animations';
@@ -12,7 +12,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
 @Component({
   selector: 'app-history-detail',
   standalone: true,
-  imports: [MatButtonModule, MatCardModule, MatIconModule, RouterLink, ReportViewerComponent, FollowUpFormComponent, StepListComponent],
+  imports: [MatButtonModule, MatCardModule, MatIconModule, RouterLink, ReportViewerComponent, FollowUpThreadComponent, StepListComponent],
   animations: [
     trigger('fadeIn', [
       transition(':enter', [style({ opacity: 0, transform: 'translateY(-8px)' }), animate('300ms ease-out', style({ opacity: 1, transform: 'translateY(0)' }))]),
@@ -58,9 +58,10 @@ import { trigger, transition, style, animate } from '@angular/animations';
           </div>
         }
 
-        <!-- Follow-up form — only for completed sessions -->
+        <!-- Follow-up conversation thread — only for completed sessions -->
         @if (researchSession()!.status === 'COMPLETED') {
-          <followup-form [sessionId]="researchSession()!.id || ''" class="followup-section" />
+          <followup-thread [sessionId]="researchSession()!.id || ''"
+                           [initialExchanges]="researchSession()!.followUps || []" class="followup-section" />
         }
       } @else if (isLoading()) {
         <p class="empty-state">Loading session...</p>

@@ -14,6 +14,7 @@ public class ResearchSessionDetailDTO {
     private String status;
     private String prompt;
     private List<StepDTO> steps;
+    private List<FollowUpExchangeDTO> followUps;
     private String finalReport;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

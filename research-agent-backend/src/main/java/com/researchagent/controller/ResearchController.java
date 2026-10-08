@@ -1,9 +1,11 @@
 package com.researchagent.controller;
 
+import com.researchagent.model.dto.FollowUpExchangeDTO;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.dto.ResearchResponse;
 import com.researchagent.model.dto.StepDTO;
 import com.researchagent.model.dto.ResearchSessionDetailDTO;
+import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.service.ResearchOrchestratorService;
@@ -194,17 +196,56 @@ public class ResearchController {
                 }).toList() : List.of();
         dto.setSteps(steps);
 
+        // Include the stored follow-up thread so the detail view can render it
+        dto.setFollowUps(toFollowUpDTOs(session));
+
         return ResponseEntity.ok(dto);
     }
 
     /**
-     * Submit a follow-up question for a completed research session.
+     * Submit a follow-up question for a completed research session. The answer is grounded in the
+     * full conversation context (topic + report + prior Q&amp;A) and the exchange is persisted on
+     * the session document; the stored exchange is returned.
      */
     @PostMapping("/{sessionId}/followup")
-    public ResponseEntity<String> submitFollowUp(@PathVariable UUID sessionId,
-                                                  @Valid @RequestBody com.researchagent.model.dto.FollowUpRequest request) {
-        String answer = orchestratorService.submitFollowUp(sessionId, request.getQuestion());
-        return ResponseEntity.ok(answer);
+    public ResponseEntity<FollowUpExchangeDTO> submitFollowUp(@PathVariable UUID sessionId,
+                                                              @Valid @RequestBody com.researchagent.model.dto.FollowUpRequest request) {
+        ResearchSession session = orchestratorService.getResearch(sessionId);
+        if (session == null) {
+            return ResponseEntity.notFound().build();
+        }
+        if (!"COMPLETED".equals(session.getStatus().name())) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        FollowUpExchange exchange = orchestratorService.submitFollowUp(sessionId, request.getQuestion());
+        return ResponseEntity.status(HttpStatus.CREATED).body(toFollowUpDTO(exchange));
+    }
+
+    /**
+     * Get the stored follow-up thread for a session, in chronological order.
+     */
+    @GetMapping("/{sessionId}/followups")
+    public ResponseEntity<List<FollowUpExchangeDTO>> getFollowUps(@PathVariable UUID sessionId) {
+        ResearchSession session = orchestratorService.getResearch(sessionId);
+        if (session == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(toFollowUpDTOs(session));
+    }
+
+    private FollowUpExchangeDTO toFollowUpDTO(FollowUpExchange exchange) {
+        FollowUpExchangeDTO dto = new FollowUpExchangeDTO();
+        dto.setId(exchange.getId());
+        dto.setQuestion(exchange.getQuestion());
+        dto.setAnswer(exchange.getAnswer());
+        dto.setCreatedAt(exchange.getCreatedAt());
+        return dto;
+    }
+
+    private List<FollowUpExchangeDTO> toFollowUpDTOs(ResearchSession session) {
+        return session.getFollowUps() != null ?
+                session.getFollowUps().stream().map(this::toFollowUpDTO).toList() : List.of();
     }
 
     /**

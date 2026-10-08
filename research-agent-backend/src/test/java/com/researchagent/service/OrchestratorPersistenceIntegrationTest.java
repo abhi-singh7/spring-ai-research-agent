@@ -163,4 +163,48 @@ class OrchestratorPersistenceIntegrationTest {
         assertEquals(1, cancelled.getSteps().size(), "no steps may be written after the cancel signal: " +
                 cancelled.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
     }
+
+    /**
+     * Follow-up exchanges are embedded in the session document: two submits must round-trip through a real
+     * save/reload in chronological order, and the second prompt must carry the first exchange as context.
+     */
+    @Test
+    void followUps_roundTripThroughSessionDocument() {
+        ResearchSession session = new ResearchSession();
+        session.setTopic("Follow-up persistence check");
+        session.setStatus(ResearchStatus.COMPLETED);
+        session.setFinalReport("# Report\nSome findings.");
+        sessionRepo.save(session);
+        UUID sessionId = session.getId();
+
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(llmGateway.complete(any(UUID.class), anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_FOLLOWUP)))
+                .thenAnswer(inv -> {
+                    if (calls.incrementAndGet() == 2) {
+                        // The second prompt must contain the first exchange's Q and A
+                        String prompt = inv.getArgument(2);
+                        assertTrue(prompt.contains("first question"), "second prompt must include the prior question: " + prompt);
+                        assertTrue(prompt.contains("answer 1"), "second prompt must include the prior answer: " + prompt);
+                    }
+                    return "answer " + calls.get();
+                });
+
+        orchestrator.submitFollowUp(sessionId, "first question");
+        orchestrator.submitFollowUp(sessionId, "second question");
+
+        ResearchSession reloaded = sessionRepo.findByIdWithSteps(sessionId);
+        assertEquals(2, reloaded.getFollowUps().size(), "both exchanges must be embedded in the document");
+        assertEquals("first question", reloaded.getFollowUps().get(0).getQuestion());
+        assertEquals("answer 1", reloaded.getFollowUps().get(0).getAnswer());
+        assertEquals("second question", reloaded.getFollowUps().get(1).getQuestion());
+        assertEquals("answer 2", reloaded.getFollowUps().get(1).getAnswer());
+        assertNotNull(reloaded.getFollowUps().get(0).getId());
+        assertNotNull(reloaded.getFollowUps().get(0).getCreatedAt());
+
+        // The dedicated thread accessor returns the stored list in order
+        assertEquals(List.of("first question", "second question"),
+                orchestrator.getFollowUps(sessionId).stream()
+                        .map(com.researchagent.model.entity.FollowUpExchange::getQuestion)
+                        .toList());
+    }
 }

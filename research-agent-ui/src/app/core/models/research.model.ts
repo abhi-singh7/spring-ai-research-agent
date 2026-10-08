@@ -10,6 +10,7 @@ export interface ResearchSession {
   finalReport?: string;
   streamUrl?: string;
   steps?: HistoryDetailStep[];
+  followUps?: FollowUpExchange[];
 }
 
 export interface HistoryDetailStep {
@@ -96,13 +97,15 @@ export interface ResearchStep {
   duration?: number;
 }
 
-// Follow-up Request / Response
+// Follow-up Request / Stored exchange
 export interface FollowUpRequest {
   question: string;
 }
 
-export interface FollowUpResponse {
-  sessionId: string;
+/** A stored follow-up Q&A exchange (embedded on the session document, chronological). */
+export interface FollowUpExchange {
+  id: string;
+  question: string;
   answer: string;
-  timestamp: string;
+  createdAt: string;
 }
