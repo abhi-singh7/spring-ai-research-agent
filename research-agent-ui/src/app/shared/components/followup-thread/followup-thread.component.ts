@@ -36,7 +36,9 @@ import { FollowUpExchange } from '../../../core/models/research.model';
             </div>
             <div class="message-row assistant">
               <div class="bubble assistant-bubble">
-                <markdown [data]="exchange.answer"></markdown>
+                <!-- .report-doc = the global report typography from styles.scss, so answers
+                     read exactly like the report on the history page (incl. dark mode). -->
+                <markdown class="report-doc" [data]="exchange.answer"></markdown>
               </div>
             </div>
           } @empty {
@@ -74,7 +76,7 @@ import { FollowUpExchange } from '../../../core/models/research.model';
   `,
   styles: [`
     .followup-thread-card { border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
-    .followup-thread-card mat-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .followup-thread-card mat-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #0f0f23; }
     .followup-thread-card mat-card-title mat-icon { color: #6366f1; }
 
     .thread { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; min-height: 24px; }
@@ -86,11 +88,14 @@ import { FollowUpExchange } from '../../../core/models/research.model';
 
     .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 0.92rem; line-height: 1.5; }
     .user-bubble { background-color: #6366f1; color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
-    .assistant-bubble { background-color: #f1f3f9; color: #1a1a2e; border-bottom-left-radius: 4px; }
+    .assistant-bubble { background-color: #f1f3f9; color: #24292f; border-bottom-left-radius: 4px; }
     .assistant-bubble.waiting { display: flex; align-items: center; justify-content: center; padding: 12px; }
-    .assistant-bubble :is(h1, h2, h3, h4) { margin: 8px 0 4px; }
-    .assistant-bubble p:first-child { margin-top: 0; }
-    .assistant-bubble p:last-child { margin-bottom: 0; }
+
+    /* Answer markdown reuses the global .report-doc typography — same look as the
+       history page report. Drop its width/font caps so it fits the bubble. */
+    .assistant-bubble .report-doc { max-width: none; font-size: inherit; line-height: 1.6; }
+    .assistant-bubble .report-doc > :first-child { margin-top: 0; }
+    .assistant-bubble .report-doc > :last-child { margin-bottom: 0; }
 
     .composer { display: flex; flex-direction: column; gap: 4px; }
     .full-width { width: 100%; }
@@ -98,9 +103,21 @@ import { FollowUpExchange } from '../../../core/models/research.model';
 
     .thread-error { color: #c62828; font-size: 0.85rem; margin: 8px 0 0; }
 
+    /* The Material theme is light-only, so in OS dark mode mat-card keeps its white
+       surface — force a dark one, exactly like .report-card does in styles.scss, or
+       the (dark-themed) text is unreadable. */
     @media (prefers-color-scheme: dark) {
+      .followup-thread-card { background-color: #1c1f26 !important; border-color: #3a3f4a !important; }
+      .followup-thread-card mat-card-title { color: #f0f2f5; }
       .user-bubble { background-color: #4f46e5; }
-      .assistant-bubble { background-color: rgba(99, 102, 241, 0.12); color: #e8e8f0; }
+      .assistant-bubble { background-color: rgba(129, 140, 248, 0.1); color: #d5d9de; }
+      .empty-thread { color: #8b919c; }
+      .thread-error { color: #ef9a9a; }
+
+      /* Composer input/label stay themed light — make them legible on the dark card. */
+      :host ::ng-deep .mat-form-field { --mdc-outlined-textfield-outline-color: #3a3f4a; }
+      :host ::ng-deep .mat-form-field-label,
+      :host ::ng-deep .mat-form-field textarea { color: #d5d9de; }
     }
   `]
 })
