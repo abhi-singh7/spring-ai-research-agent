@@ -39,6 +39,7 @@ logs/
 .env
 .env.*
 !env.example
+!infra/firecrawl/.env.example
 
 # === Spring Boot Actuator ===
 actuator-endpoints/
@@ -60,9 +61,6 @@ node_modules/
 
 # === Ollama (if used locally) ===
 ollama_models/
-
-# === Local env files (keep .env.example, ignore local copies) ===
-infra/firecrawl/.env
 
 # === Python (virtualenvs & bytecode) ===
 .venv/
