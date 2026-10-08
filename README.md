@@ -62,6 +62,7 @@ Research-Agent/
 - **Node.js 20+** with npm
 - **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent` — the database is created automatically)
 - **Ollama** running locally — e.g., a model like `gemma-4-26b` available at `http://localhost:1234`
+- **Firecrawl** (self-hosted, preferred search/scrape backend) — start the Docker stack in `infra/firecrawl/` (API on `http://localhost:3002`; see [docs/firecrawl-self-hosted.md](docs/firecrawl-self-hosted.md)). If it's down, search degrades gracefully through the fallback chain (`ddg → ollama_web_search → tavily`)
 
 ### Backend
 
@@ -124,6 +125,7 @@ See [Backend ARCHITECTURE](research-agent-backend/docs/ARCHITECTURE.md) and [Fro
 | Frontend State Management | [research-agent-ui/docs/STATE-MANAGEMENT.md](research-agent-ui/docs/STATE-MANAGEMENT.md) | Signal-based state, SSE→signal mapping, computed signals |
 | Frontend Models | [research-agent-ui/docs/MODELS.md](research-agent-ui/docs/MODELS.md) | TypeScript interfaces mirroring backend structure |
 | Frontend Configuration | [research-agent-ui/docs/CONFIGURATION.md](research-agent-ui/docs/CONFIGURATION.md) | angular.json, tsconfig, proxy, build config |
+| Self-Hosted Firecrawl | [docs/firecrawl-self-hosted.md](docs/firecrawl-self-hosted.md) | Docker stack (`infra/firecrawl/`), API contract, config, MCP usage for other LLMs, troubleshooting |
 
 ## Development Workflow
 

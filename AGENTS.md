@@ -19,6 +19,14 @@ curl http://localhost:8080/api/health             # unauthenticated liveness pro
 
 Requires MongoDB (`spring.mongodb.uri`, default `mongodb://localhost:27017/research-agent`) and a local LLM endpoint — configured in `src/main/resources/application.yml`. Default model: `google/gemma-4-26b-a4b-qat` (commented alternative: `qwopus3.6-35b-a3b-v1`).
 
+### Firecrawl (self-hosted search/scrape backend)
+```bash
+cd infra/firecrawl && cp .env.example .env   # first time only
+docker compose up -d                        # API on http://localhost:3002
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3002/   # any HTTP code = up (no /health endpoint)
+```
+Full stack layout, API contract, config, MCP usage for other LLMs, and troubleshooting: `docs/firecrawl-self-hosted.md`.
+
 ### Frontend (`research-agent-ui/`)
 ```bash
 npm start                     # proxy.conf.json forwards /api → localhost:8080
@@ -62,6 +70,8 @@ The preferred search/scrape backends are plain HTTP APIs called directly by the 
 |---------|----------|---------|
 | firecrawl search | `POST {app.search.firecrawl-base-url}/v2/search` (default `http://localhost:3002`) | First backend in every McpToolRouter chain — self-hosted Firecrawl API |
 | firecrawl scrape | `POST {app.search.firecrawl-base-url}/v2/scrape` with `{"formats":["markdown"]}` | UrlReaderTool fallback when Jsoup fails or finds no readable body |
+
+The self-hosted Firecrawl stack runs from `infra/firecrawl/docker-compose.yml` (prebuilt ghcr images + local SearXNG backing `/v2/search`; port 3002, no API key — `USE_DB_AUTHENTICATION=false`). See `docs/firecrawl-self-hosted.md` for setup, config, and how to expose the same instance as an MCP server to other LLMs.
 
 See McpToolRouter.java for routing logic, WebSearchTool.java / UrlReaderTool.java for execution, and ChatClientConfig.java for tool registration.
 
