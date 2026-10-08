@@ -1,4 +1,4 @@
-import { Component, DestroyRef, inject, input, signal } from '@angular/core';
+import { AfterViewInit, Component, DestroyRef, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -114,15 +114,15 @@ import { FollowUpExchange } from '../../../core/models/research.model';
     .thread-error { color: #c62828; font-size: 0.85rem; margin: 8px 0 0; }
   `]
 })
-export class FollowUpThreadComponent {
+export class FollowUpThreadComponent implements AfterViewInit {
   /** Session the thread belongs to (COMPLETED sessions only). */
   sessionId = input.required<string>();
 
   /** Exchanges already stored on the session — seeds the thread. */
   initialExchanges = input<FollowUpExchange[]>([]);
 
-  /** Writable thread state: seeded from the input, grown as answers arrive. */
-  exchanges = signal<FollowUpExchange[]>(this.initialExchanges());
+  /** Writable thread state: seeded in ngAfterViewInit, grown as answers arrive. */
+  exchanges = signal<FollowUpExchange[]>([]);
 
   question = '';
   isLoading = signal(false);
@@ -133,6 +133,13 @@ export class FollowUpThreadComponent {
   // Captured in the injection context (field initializer) so it can be passed to
   // takeUntilDestroyed() from event handlers, where no injection context is active.
   private destroyRef = inject(DestroyRef);
+
+  ngAfterViewInit(): void {
+    // Inputs are bound AFTER construction — reading initialExchanges() in a field
+    // initializer always returns the default []. Seed the thread here instead, so
+    // persisted exchanges render on page load.
+    this.exchanges.set(this.initialExchanges());
+  }
 
   onAsk(): void {
     const text = this.question.trim();
