@@ -1,10 +1,12 @@
 package com.researchagent.service;
 
 import tools.jackson.databind.ObjectMapper;
+import com.researchagent.model.dto.FollowUpExchangeDTO;
 import com.researchagent.model.dto.FollowUpRequest;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.dto.ResearchRoundNote;
 import com.researchagent.model.dto.SubTopic;
+import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
@@ -42,6 +44,8 @@ public class ResearchOrchestratorService {
     public static final double TEMP_PLANNING = 0.3;
     public static final double TEMP_RESEARCH = 0.7;
     public static final double TEMP_SYNTHESIS = 0.4;
+    /** Follow-up answers must stay grounded in the report — same low-creativity regime as planning. */
+    public static final double TEMP_FOLLOWUP = 0.3;
 
     /** Retry policy for individual LLM calls: 1 initial attempt + 2 retries with short backoff. */
     private static final int MAX_LLM_ATTEMPTS = 3;
@@ -827,33 +831,72 @@ public class ResearchOrchestratorService {
 
     /**
      * Submit a follow-up question for a completed research session.
+     *
+     * <p>The answer is grounded in the FULL conversation context — topic, final report and every
+     * prior Q&amp;A exchange — so later questions can refer back to earlier answers. The call goes
+     * through {@link LlmGateway} with the session id first, so it is attributed to this session in
+     * {@code llm_logs}. On success the new exchange is persisted on the session document (adopting
+     * the saved instance) and returned; a failed LLM call throws and stores nothing.</p>
      */
-    public String submitFollowUp(UUID sessionId, String question) {
+    public FollowUpExchange submitFollowUp(UUID sessionId, String question) {
         ResearchSession session = getResearch(sessionId);
         if (session == null || !"COMPLETED".equals(session.getStatus().name())) {
             throw new IllegalArgumentException("Can only ask follow-up questions for completed sessions");
         }
 
-        // Use the LLM to answer based on the final report content
-        String prompt = """
-                You are a research assistant. The user has asked a follow-up question about a previous
-                research session. Answer based on the following research findings:
-                
-                Topic: %s
-                Final Report: %s
-                
-                Follow-up Question: %s
-                
-                Provide a concise, well-reasoned answer based on the above content. If you cannot find
-                relevant information to answer the question, say so clearly.
-                """.formatted(session.getTopic(), session.getFinalReport() != null ? session.getFinalReport() : "No report available", question);
+        String systemPrompt = """
+                You are a research assistant answering follow-up questions about a completed research
+                session. Answer strictly based on the provided research findings and the conversation
+                so far. Be concise and well-reasoned, and where relevant refer back to earlier answers
+                in the conversation. If the provided content does not contain what is needed to answer
+                the question, say so clearly.
+                """;
 
+        StringBuilder context = new StringBuilder();
+        context.append("Topic: ").append(session.getTopic()).append("\n\n");
+        context.append("Final Report:\n")
+               .append(session.getFinalReport() != null ? session.getFinalReport() : "No report available")
+               .append("\n");
+
+        List<FollowUpExchange> prior = session.getFollowUps() != null ? session.getFollowUps() : List.of();
+        if (!prior.isEmpty()) {
+            context.append("\nEarlier follow-up conversation:\n");
+            for (FollowUpExchange exchange : prior) {
+                context.append("Q: ").append(exchange.getQuestion()).append("\n");
+                context.append("A: ").append(exchange.getAnswer()).append("\n\n");
+            }
+        }
+
+        context.append("Follow-up Question: ").append(question);
+
+        String answer;
         try {
-            return llmGateway.complete(sessionId, prompt, "", TEMP_PLANNING);
+            answer = llmGateway.complete(sessionId, systemPrompt, context.toString(), TEMP_FOLLOWUP).trim();
         } catch (Exception e) {
             log.error("Error processing follow-up for session {}", sessionId, e);
             throw new RuntimeException("Failed to process follow-up: " + e.getMessage());
         }
+
+        FollowUpExchange exchange = new FollowUpExchange();
+        exchange.setQuestion(question);
+        exchange.setAnswer(answer);
+        exchange.setCreatedAt(LocalDateTime.now());
+        session.addFollowUp(exchange);
+        // Adopt the saved instance so a later save never clobbers newer state with a stale copy.
+        session = sessionRepo.save(session);
+        log.info("Stored follow-up exchange {} for session {}", exchange.getId(), sessionId);
+        return exchange;
+    }
+
+    /**
+     * Get the stored follow-up thread for a session, in chronological order (empty if none).
+     */
+    public List<FollowUpExchange> getFollowUps(UUID sessionId) {
+        ResearchSession session = getResearch(sessionId);
+        if (session == null) {
+            return List.of();
+        }
+        return session.getFollowUps() != null ? List.copyOf(session.getFollowUps()) : List.of();
     }
 
     /**

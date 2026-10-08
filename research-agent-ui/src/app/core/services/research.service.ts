@@ -432,9 +432,18 @@ export class ResearchService {
     });
   }
 
-  submitFollowUp(sessionId: string, question: string): Observable<string> {
+  /**
+   * Submit a follow-up question. The server answers from the full conversation context
+   * (topic + report + prior Q&A), persists the exchange on the session and returns it.
+   */
+  submitFollowUp(sessionId: string, question: string): Observable<ResearchModels.FollowUpExchange> {
     const request: ResearchModels.FollowUpRequest = { question };
-    return this.http.post<string>(`${this.baseUrl}/${sessionId}/followup`, request);
+    return this.http.post<ResearchModels.FollowUpExchange>(`${this.baseUrl}/${sessionId}/followup`, request);
+  }
+
+  /** Get the stored follow-up thread for a session (chronological). */
+  getFollowUps(sessionId: string): Observable<ResearchModels.FollowUpExchange[]> {
+    return this.http.get<ResearchModels.FollowUpExchange[]>(`${this.baseUrl}/${sessionId}/followups`);
   }
 
   // SSE Event Handlers (private)

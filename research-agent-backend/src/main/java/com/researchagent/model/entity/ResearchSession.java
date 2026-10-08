@@ -43,6 +43,15 @@ public class ResearchSession {
 
     private String finalReport;
 
+    /**
+     * Follow-up Q&amp;A exchanges, embedded and kept in chronological order. {@code @JsonIgnore}
+     * mirrors {@code steps}: the history list endpoints serialize this entity directly and must not
+     * bloat every row with full answers — detail/thread endpoints build explicit DTOs.
+     */
+    @JsonIgnore
+    @ToString.Exclude
+    private List<FollowUpExchange> followUps = new ArrayList<>();
+
     @Indexed
     private LocalDateTime createdAt;
 
@@ -58,6 +67,16 @@ public class ResearchSession {
             steps = new ArrayList<>();
         }
         steps.add(step);
+    }
+
+    /**
+     * Convenience method to append a follow-up exchange to the embedded list.
+     */
+    public void addFollowUp(FollowUpExchange exchange) {
+        if (followUps == null) {
+            followUps = new ArrayList<>();
+        }
+        followUps.add(exchange);
     }
 
     /**

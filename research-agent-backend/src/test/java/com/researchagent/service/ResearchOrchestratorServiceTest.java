@@ -1,6 +1,7 @@
 package com.researchagent.service;
 
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.repository.ResearchSessionRepository;
@@ -197,6 +198,72 @@ class ResearchOrchestratorServiceTest {
         assertThatThrownBy(() -> service.submitFollowUp(nonExistentId, "What?"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("completed sessions");
+    }
+
+    @Test
+    void submitFollowUp_shouldPersistExchangeOnAdoptedSessionWithFullContext() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = new ResearchSession();
+        session.setId(sessionId);
+        session.setStatus(ResearchStatus.COMPLETED);
+        session.setTopic("Quantum computing");
+        session.setFinalReport("# Quantum computing\nQubits are the basic unit...");
+
+        // A prior exchange that must appear in the prompt as conversation context
+        FollowUpExchange prior = new FollowUpExchange();
+        prior.setQuestion("What is a qubit?");
+        prior.setAnswer("A qubit is the quantum analogue of a bit.");
+        session.addFollowUp(prior);
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(llmGateway.complete(eq(sessionId), anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_FOLLOWUP)))
+            .thenReturn("Superposition lets a qubit hold 0 and 1 at once.");
+        when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        FollowUpExchange result = service.submitFollowUp(sessionId, "What is superposition?");
+
+        // The returned exchange is the stored one (id + timestamp populated)
+        assertThat(result.getId()).isNotNull();
+        assertThat(result.getQuestion()).isEqualTo("What is superposition?");
+        assertThat(result.getAnswer()).isEqualTo("Superposition lets a qubit hold 0 and 1 at once.");
+        assertThat(result.getCreatedAt()).isNotNull();
+
+        // The prompt carries topic, report AND the prior Q&A transcript
+        org.mockito.ArgumentCaptor<String> userMsg = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(llmGateway).complete(eq(sessionId), anyString(), userMsg.capture(), eq(ResearchOrchestratorService.TEMP_FOLLOWUP));
+        String prompt = userMsg.getValue();
+        assertThat(prompt).contains("Quantum computing")
+            .contains("Qubits are the basic unit")
+            .contains("What is a qubit?")
+            .contains("A qubit is the quantum analogue of a bit.")
+            .contains("What is superposition?");
+
+        // The exchange was persisted on the session that was saved (adopted instance)
+        org.mockito.ArgumentCaptor<ResearchSession> saved = org.mockito.ArgumentCaptor.forClass(ResearchSession.class);
+        verify(sessionRepo).save(saved.capture());
+        assertThat(saved.getValue().getFollowUps()).hasSize(2);
+        assertThat(saved.getValue().getFollowUps().get(1)).isSameAs(result);
+    }
+
+    @Test
+    void submitFollowUp_shouldNotSaveWhenLlmCallFails() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = new ResearchSession();
+        session.setId(sessionId);
+        session.setStatus(ResearchStatus.COMPLETED);
+        session.setTopic("Quantum computing");
+        session.setFinalReport("# Quantum computing");
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(llmGateway.complete(eq(sessionId), anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_FOLLOWUP)))
+            .thenThrow(new RuntimeException("LLM down"));
+
+        assertThatThrownBy(() -> service.submitFollowUp(sessionId, "What?"))
+            .isInstanceOf(RuntimeException.class)
+            .hasMessageContaining("Failed to process follow-up");
+
+        verify(sessionRepo, never()).save(any(ResearchSession.class));
+        assertThat(session.getFollowUps()).isEmpty();
     }
 
     // ---------- deleteSession ----------
