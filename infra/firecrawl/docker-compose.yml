@@ -1,0 +1,153 @@
+# Self-hosted Firecrawl stack — the preferred search/scrape backend for Research-Agent.
+#
+# Mirrors the locally running installation: prebuilt ghcr images (no local build)
+# plus a local SearXNG instance so `POST /v2/search` works (Firecrawl's built-in
+# DDG provider is blocked on datacenter IPs).
+#
+# Usage:
+#   cp .env.example .env          # first time only
+#   docker compose up -d          # starts the stack; API published on :3002
+#   docker compose ps             # verify all services are running
+#   docker compose down           # stop (no persistent volumes — data is ephemeral)
+#
+# Research-Agent talks to it over plain HTTP at http://localhost:3002
+# (app.search.firecrawl-base-url). No API key is required because
+# USE_DB_AUTHENTICATION=false. See docs/firecrawl-self-hosted.md for details.
+
+name: firecrawl
+
+services:
+  api:
+    image: ghcr.io/firecrawl/firecrawl:${FIRECRAWL_VERSION:-v2.11.325}
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: 3002
+      REDIS_URL: redis://redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_HOST: nuq-postgres
+      POSTGRES_PORT: 5432
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      # No API keys enforced — the Research-Agent backend calls it unauthenticated.
+      USE_DB_AUTHENTICATION: "false"
+      NUM_WORKERS_PER_QUEUE: ${NUM_WORKERS_PER_QUEUE:-8}
+      CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-10}
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+      BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-5}
+      # /v2/search delegates to this local SearXNG instance.
+      SEARXNG_ENDPOINT: http://searxng:8080
+    depends_on:
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      playwright-service:
+        condition: service_started
+    ports:
+      - "3002:3002"
+    networks:
+      - backend
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    # Resource limits — raise if the host has more headroom.
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service:${FIRECRAWL_VERSION:-v2.11.325}
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-10}
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --bind 0.0.0.0
+    networks:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    networks:
+      - backend
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:${FIRECRAWL_VERSION:-v2.11.325}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    networks:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+  # Search provider for /v2/search. JSON output on, limiter off (local network only).
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      BIND_ADDRESS: "0.0.0.0"   # reachable from the api container on the backend network
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge

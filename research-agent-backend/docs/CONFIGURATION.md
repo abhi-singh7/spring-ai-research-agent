@@ -87,7 +87,7 @@ app:
     tavily-api-key: ${TAVILY_API_KEY:}
 ```
 
-- **firecrawl-base-url**: Base URL of the self-hosted Firecrawl API. `WebSearchTool` calls `POST {base}/v2/search` (body `{"query": ..., "limit": N}`; response `{"success": true, "data": {"web": [{url, title, description}]}}`) as the FIRST backend in every routing chain. `UrlReaderTool` calls `POST {base}/v2/scrape` (body `{"url": ..., "formats": ["markdown"]}`) as a fallback when Jsoup can't read a page.
+- **firecrawl-base-url**: Base URL of the self-hosted Firecrawl API. `WebSearchTool` calls `POST {base}/v2/search` (body `{"query": ..., "limit": N}`; response `{"success": true, "data": {"web": [{url, title, description}]}}`) as the FIRST backend in every routing chain. `UrlReaderTool` calls `POST {base}/v2/scrape` (body `{"url": ..., "formats": ["markdown"]}`) as a fallback when Jsoup can't read a page. The stack itself is defined in [`infra/firecrawl/docker-compose.yml`](../../infra/firecrawl/docker-compose.yml) (prebuilt ghcr images + local SearXNG; no API key, `USE_DB_AUTHENTICATION=false`) — setup, config, and MCP usage for other LLMs are documented in [`docs/firecrawl-self-hosted.md`](../../docs/firecrawl-self-hosted.md).
 - **Search escalation chain** (executed in ONE `WebSearchTool` call, per `McpToolRouter`): `firecrawl → ddg → ollama_web_search → tavily`. Empty/missing keys degrade to an explicit "not configured" reason instead of a network call.
 
 #### MongoDB Configuration

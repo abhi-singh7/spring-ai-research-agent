@@ -1,0 +1,11 @@
+# SearXNG config for the Firecrawl self-hosted instance: JSON output on, limiter off (local network only).
+use_default_settings: true
+
+server:
+  # secret_key is generated automatically on first boot — no need to set one.
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json
