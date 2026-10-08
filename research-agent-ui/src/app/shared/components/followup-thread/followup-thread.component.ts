@@ -1,4 +1,4 @@
-import { Component, inject, input, signal } from '@angular/core';
+import { Component, DestroyRef, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -120,6 +120,10 @@ export class FollowUpThreadComponent {
 
   private researchService = inject(ResearchService);
 
+  // Captured in the injection context (field initializer) so it can be passed to
+  // takeUntilDestroyed() from event handlers, where no injection context is active.
+  private destroyRef = inject(DestroyRef);
+
   onAsk(): void {
     const text = this.question.trim();
     if (!text || this.isLoading()) return;
@@ -128,7 +132,7 @@ export class FollowUpThreadComponent {
     this.error.set(null);
 
     this.researchService.submitFollowUp(this.sessionId(), text).pipe(
-      takeUntilDestroyed()
+      takeUntilDestroyed(this.destroyRef)
     ).subscribe({
       next: (exchange) => {
         // The server returns the exact stored object — append it, no refetch needed.
