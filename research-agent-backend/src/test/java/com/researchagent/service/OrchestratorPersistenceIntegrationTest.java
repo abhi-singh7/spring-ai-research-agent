@@ -1,5 +1,6 @@
 package com.researchagent.service;
 
+import com.researchagent.model.dto.QualityEvalResult;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.dto.ResearchRoundNote;
 import com.researchagent.model.dto.ResearchRoundNote.SourceRef;
@@ -86,6 +87,9 @@ class OrchestratorPersistenceIntegrationTest {
                 .thenReturn(breakdownPlan());
         when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
                 .thenReturn(researchNote());
+        // Quality eval gate (also uses planning temperature 0.3 but with Class<QualityEvalResult> type)
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), eq(QualityEvalResult.class)))
+                .thenReturn(new QualityEvalResult(8, 8, 8, 8, 9, true, List.of(), List.of()));
         when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(0.4)))
                 .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
 
@@ -104,15 +108,16 @@ class OrchestratorPersistenceIntegrationTest {
             status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
         }
 
-        // Assert: completed, and exactly 4 embedded steps with unique order indexes (no duplicates)
+        // Assert: completed, and exactly 5 embedded steps with unique order indexes (no duplicates)
+        // Steps: BREAKDOWN(0), SUBTOPIC Alpha(1), SUBTOPIC Beta(2), QUALITY_EVAL(3), FINAL_REPORT(4)
         assertEquals(ResearchStatus.COMPLETED, status, "research run must complete without persistence errors");
         ResearchSession finished = sessionRepo.findByIdWithSteps(sessionId);
         List<Integer> orderIndexes = finished.getSteps().stream()
                 .map(step -> step.getOrderIndex())
                 .sorted()
                 .toList();
-        assertTrue(orderIndexes.equals(List.of(0,1,2,3)), "unexpected steps: " + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
-        assertEquals(List.of(0, 1, 2, 3), orderIndexes, "order indexes must be sequential and unique");
+        assertTrue(orderIndexes.equals(List.of(0,1,2,3,4)), "unexpected steps: " + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+        assertEquals(List.of(0, 1, 2, 3, 4), orderIndexes, "order indexes must be sequential and unique");
         assertNotNull(finished.getFinalReport());
         assertTrue(finished.getFinalReport().contains("Final Report"));
     }

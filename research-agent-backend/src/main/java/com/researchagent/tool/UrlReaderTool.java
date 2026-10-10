@@ -6,6 +6,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import com.researchagent.service.WebContentCacheService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -25,6 +26,11 @@ import java.util.Map;
  * navigation elements, and other non-content markup. When Jsoup fails or finds no readable
  * body (bot-walled or JS-heavy pages), it escalates to the self-hosted Firecrawl API
  * (POST {firecrawl-base-url}/v2/scrape) which renders the page and returns clean markdown.
+ *
+ * <p>Every read consults the web content cache ({@link WebContentCacheService}, collection
+ * {@code web_page_cache}, ~1-week Mongo TTL) FIRST — a non-expired hit returns without any network
+ * I/O. Successful NON-EMPTY reads are stored (full cleaned text, not the length-truncated reply);
+ * empty/failing reads are never cached.</p>
  */
 @Component
 public class UrlReaderTool {
@@ -35,9 +41,12 @@ public class UrlReaderTool {
     private static final String USER_AGENT = "Mozilla/5.0 (compatible; ResearchBot/1.0)";
 
     private final String firecrawlBaseUrl;
+    private final WebContentCacheService cache;
 
-    public UrlReaderTool(@Value("${app.search.firecrawl-base-url:http://localhost:3002}") String firecrawlBaseUrl) {
+    public UrlReaderTool(@Value("${app.search.firecrawl-base-url:http://localhost:3002}") String firecrawlBaseUrl,
+                         WebContentCacheService cache) {
         this.firecrawlBaseUrl = firecrawlBaseUrl;
+        this.cache = cache;
     }
 
     /**
@@ -50,7 +59,14 @@ public class UrlReaderTool {
     ) {
         int maxLength = (maxContentLength != null && maxContentLength > 0) ? maxContentLength : 10000;
 
+        // Cache first: a non-expired hit skips Jsoup AND Firecrawl entirely.
+        var cached = cache.find(url);
+        if (cached.isPresent()) {
+            return truncate(cached.get(), maxLength);
+        }
+
         String content = null;
+        String source = null;
         String jsoupError = null;
         try {
             Document doc = Jsoup.connect(url)
@@ -61,6 +77,7 @@ public class UrlReaderTool {
                     .get();
 
             content = extractMainContent(doc);
+            source = "jsoup";
         } catch (Exception e) {
             jsoupError = e.getMessage();
         }
@@ -69,14 +86,17 @@ public class UrlReaderTool {
             // Jsoup failed or found no readable body — escalate to the self-hosted Firecrawl scraper.
             String scraped = scrapeViaFirecrawl(url);
             if (scraped != null && !scraped.isBlank()) {
+                cache.store(url, scraped, "firecrawl");
                 return truncate(scraped, maxLength);
             }
+            // Nothing readable from any reader — deliberately NOT cached (no negative caching).
             if (jsoupError == null) {
                 return ""; // no readable content from any reader — LLM can use search snippets instead of failing
             }
             return "Error reading URL " + url + ": " + jsoupError;
         }
 
+        cache.store(url, content, source);
         return truncate(content, maxLength);
     }
 

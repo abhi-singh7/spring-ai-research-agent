@@ -158,8 +158,8 @@ export class HistoryDetailComponent {
 
   getStepTypeName(type: string): string {
     const names: Record<string, string> = {
-      BREAKDOWN: 'Breakdown', SUBTOPIC: 'Sub-topic', FINAL_REPORT: 'Final Report',
-      SEARCH: 'Search', READ: 'Read', SYNTHESIS: 'Synthesis'
+      BREAKDOWN: 'Breakdown', SUBTOPIC: 'Sub-topic', QUALITY_EVAL: 'Quality Check',
+      FINAL_REPORT: 'Final Report', SEARCH: 'Search', READ: 'Read', SYNTHESIS: 'Synthesis'
     };
     return names[type] || type;
   }

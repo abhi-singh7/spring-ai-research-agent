@@ -1,9 +1,17 @@
 package com.researchagent.tool;
 
+import com.researchagent.model.entity.WebPageCacheEntry;
+import com.researchagent.repository.WebPageCacheRepository;
+import com.researchagent.service.WebContentCacheService;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.Optional;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -57,6 +65,7 @@ class WebSearchToolTest {
     private StubServer ddg;
     private StubServer ollama;
     private StubServer tavily;
+    private WebContentCacheService disabledCache;
     private WebSearchTool tool;
 
     /** Firecrawl v2/search success payload: {"success":true,"data":{"web":[{url,title,description}]}} */
@@ -99,8 +108,10 @@ class WebSearchToolTest {
         ddg.start();
         ollama.start();
         tavily.start();
+        // Disabled cache → formatting identical to the pre-cache behavior for all legacy tests.
+        disabledCache = new WebContentCacheService(Mockito.mock(WebPageCacheRepository.class), false, Duration.ofDays(7));
         tool = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
-                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "tavily-test-key");
+                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "tavily-test-key", disabledCache);
     }
 
     @AfterEach
@@ -218,7 +229,7 @@ class WebSearchToolTest {
     @Test
     void ollamaApiKeyMissing_backendReportsNotConfiguredWithoutCallingOut() {
         WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
-                ollama.baseUrl(), "   ", tavily.baseUrl(), "tavily-test-key");
+                ollama.baseUrl(), "   ", tavily.baseUrl(), "tavily-test-key", disabledCache);
         firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 200; // empty page → no results
         ddg.body = "<html><body>nothing</body></html>";
@@ -234,7 +245,7 @@ class WebSearchToolTest {
     @Test
     void tavilyApiKeyMissing_backendReportsNotConfiguredWithoutCallingOut() {
         WebSearchTool noKey = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
-                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "   ");
+                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "   ", disabledCache);
         firecrawl.body = "{\"success\":true,\"data\":{\"web\":[]}}";
         ddg.status = 403; // blocked — escalation continues
         ollama.status = 500;
@@ -247,12 +258,64 @@ class WebSearchToolTest {
         assertThat(tavily.hits.get()).isZero();
     }
 
+    /** Build an ENABLED cache service whose mocked repo serves the given url → content map. */
+    private WebContentCacheService enabledCacheWith(java.util.Map<String, String> entries) {
+        WebPageCacheRepository repo = Mockito.mock(WebPageCacheRepository.class);
+        entries.forEach((url, content) -> Mockito.when(repo.findByUrl(url)).thenReturn(
+                Optional.of(WebPageCacheEntry.builder()
+                        .url(url).content(content).source("jsoup")
+                        .fetchedAt(LocalDateTime.now()).build())));
+        return new WebContentCacheService(repo, true, Duration.ofDays(7));
+    }
+
+    @Test
+    void cachedHit_getsContentInlinedUnderResult() {
+        firecrawl.body = FIRECRAWL_JSON;
+        String cachedBody = "Cached article body about FC Title.";
+        WebSearchTool cachedTool = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
+                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "tavily-test-key",
+                enabledCacheWith(java.util.Map.of("https://a.example/1", cachedBody)));
+
+        String result = cachedTool.search("how does X work", "general-search");
+
+        // The cached URL gets its content inlined; the uncached sibling is formatted as before.
+        assertThat(result).contains("Cached content: " + cachedBody);
+        assertThat(result).contains("FC Two").doesNotContain("Second\n   Cached content:");
+    }
+
+    @Test
+    void inlineCaps_perHitTruncatedAndTotalBudgetEnforced() {
+        firecrawl.body = """
+                {"success":true,"data":{"web":[
+                  {"url":"https://a.example/1","title":"One","description":"s1"},
+                  {"url":"https://a.example/2","title":"Two","description":"s2"},
+                  {"url":"https://a.example/3","title":"Three","description":"s3"},
+                  {"url":"https://a.example/4","title":"Four","description":"s4"}
+                ]}}""";
+        // Four entries of 5 000 chars each: per-hit cap 4 000, total budget 16 000 → all four fit exactly.
+        java.util.Map<String, String> entries = new java.util.LinkedHashMap<>();
+        for (int i = 1; i <= 4; i++) {
+            entries.put("https://a.example/" + i, "x".repeat(5_000));
+        }
+        WebSearchTool cachedTool = new WebSearchTool(new McpToolRouter(), firecrawl.baseUrl(), ddg.baseUrl(),
+                ollama.baseUrl(), "test-api-key", tavily.baseUrl(), "tavily-test-key",
+                enabledCacheWith(entries));
+
+        String result = cachedTool.search("q", null);
+
+        // Each hit truncated to 4 000 chars (ellipsis appended)...
+        long inlineChars = result.lines().filter(l -> l.startsWith("   Cached content: "))
+                .mapToLong(l -> l.length() - "   Cached content: ".length()).sum();
+        assertThat(inlineChars).isLessThanOrEqualTo(16_000);
+        assertThat(result).contains("x".repeat(4_000) + "...");
+    }
+
     @Test
     void firecrawlDown_ddgWorks_stillSucceedsWithIndependentEngine() {
         // Simulate a dead Firecrawl process: connection refused (nothing listening on that port).
         WebSearchTool toolWithDeadFirecrawl = new WebSearchTool(
                 new McpToolRouter(), "http://127.0.0.1:1", ddg.baseUrl(), ollama.baseUrl(), "test-api-key",
-                tavily.baseUrl(), "tavily-test-key");
+                tavily.baseUrl(), "tavily-test-key", disabledCache);
         ddg.body = DDG_HTML;
         firecrawl.close();
 
