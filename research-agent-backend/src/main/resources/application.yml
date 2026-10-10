@@ -71,6 +71,9 @@ app:
       issuer: research-agent
   research:
     default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
+    quality-eval:
+      enabled: true             # run a structured quality gate before final report generation
+      min-score: 6              # minimum overall score (0–10) to pass without supplementary research
   cache:
     # Web page content cache (openspec/changes/web-content-cache): URL → scraped markdown in Mongo.
     # Entries self-expire via a TTL index on fetchedAt (P7D); keep ttl ≤ P7D or Mongo expires first.
