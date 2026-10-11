@@ -1,9 +1,12 @@
 package com.researchagent.service;
 
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import com.researchagent.model.dto.FollowUpExchangeDTO;
 import com.researchagent.model.dto.FollowUpRequest;
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.dto.QualityEvalResult;
 import com.researchagent.model.dto.ResearchRoundNote;
 import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.FollowUpExchange;
@@ -58,6 +61,14 @@ public class ResearchOrchestratorService {
     /** Fallback for the iterative research rounds when the request does not specify maxIterations. */
     @Value("${app.research.default-max-iterations:3}")
     private int defaultMaxIterations;
+
+    /** Quality gate: run a structured LLM evaluation before final report generation. */
+    @Value("${app.research.quality-eval.enabled:true}")
+    private boolean qualityEvalEnabled = true;
+
+    /** Minimum overall score (0-10) to pass the quality gate without supplementary research. */
+    @Value("${app.research.quality-eval.min-score:6}")
+    private int qualityEvalMinScore = 6;
 
     private final LlmGateway llmGateway;
     private final ObjectMapper objectMapper;
@@ -250,30 +261,11 @@ public class ResearchOrchestratorService {
                 session = persistChecked(handle, session); // Persist each SUBTOPIC step incrementally (adopt merged instance — see note above)
             }
 
-            if (findingsBlocks.isEmpty()) {
-                String reason = "All sub-topic research attempts failed: " + String.join("; ", failedSubTopics);
-                log.error("Session {}: {}", sessionId, reason);
-                // Total failure — nothing to synthesize. Guarded: a cancelled/terminal run is not overwritten with FAILED.
-                if (ownsSessionState(sessionId)) {
-                    session.fail(reason);
-                    try {
-                        session = persist(session); // persist FAILED status (was silently lost before)
-                    } catch (Exception persistError) {
-                        log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
-                    }
-                } else {
-                    log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
-                }
-                streamService.sendError(sessionId, reason);
-                return;
-            }
-
-            // --- Step 3: Generate final report (streamed) with References built from captured sources ---
-            handle.ensureActive(); // checkpoint before starting the long-running report stream
-            generateFinalReport(handle, sessionId, session, request.getTopic(), plan.topics().size(),
-                    findingsBlocks, failedSubTopics, aggregatedSources.values());
-            // From here on the STREAM owns registry cleanup (its terminal callbacks unregister).
-            reportStreamStarted = true;
+            // --- Steps 2.5 + 3: quality gate and streamed report (shared with the resume path) ---
+            PostResearchResult post = runPostResearchStages(handle, session, request.getTopic(), plan.topics().size(),
+                    findingsBlocks, failedSubTopics, aggregatedSources);
+            session = post.session();
+            reportStreamStarted = post.reportStreamStarted();
 
         } catch (ResearchCancelledException e) {
             log.info("Pipeline for session {} stopped due to user cancellation", sessionId);
@@ -301,6 +293,274 @@ public class ResearchOrchestratorService {
                 cancellationRegistry.unregister(sessionId, handle);
             }
         }
+    }
+
+    // ==================== RESUME (FAILED / CANCELLED SESSIONS) ====================
+
+    /**
+     * Claim a FAILED/CANCELLED session for resume and kick off the async resume pipeline.
+     *
+     * <p>The atomic claim ({@code markResumableIfTerminal}) flips the document back to PROCESSING
+     * only if it is still in a resumable terminal state, so at most one concurrent resume can win —
+     * losers get {@link IllegalStateException} (the controller maps that to 409).</p>
+     */
+    public ResearchSession resumeResearch(UUID sessionId) {
+        int claimed = sessionRepo.markResumableIfTerminal(sessionId, LocalDateTime.now());
+        if (claimed == 0) {
+            throw new IllegalStateException("Session " + sessionId + " is not in a resumable state");
+        }
+        ResearchSession session = sessionRepo.findByIdWithSteps(sessionId);
+        log.info("Resuming research session {}", sessionId);
+        processResumeAsync(sessionId);
+        return session;
+    }
+
+    /**
+     * Resume pipeline for a claimed session: recover the original plan from the BREAKDOWN step
+     * (fresh breakdown only when none is recoverable), reuse the notes of completed sub-topics,
+     * re-research failed/missing ones in place at their original orderIndex, then run the shared
+     * quality gate + report stages. Cancellation and terminal-write guarding behave exactly as for
+     * a fresh run (fresh registry handle, same {@link #ownsSessionState(UUID)} guards).
+     */
+    @Async("researchTaskExecutor")
+    public void processResumeAsync(UUID sessionId) {
+        ResearchSession session = null; // assigned inside the guarded block below
+
+        ResearchCancellationRegistry.CancellationHandle handle = cancellationRegistry.register(sessionId);
+        boolean reportStreamStarted = false;
+        try {
+            session = sessionRepo.findByIdWithSteps(sessionId);
+            if (session == null) {
+                log.error("Session {} not found for resume", sessionId);
+                return;
+            }
+
+            // The claim already flipped the status to PROCESSING; abort if that state was lost in the meantime.
+            if (!ownsSessionState(sessionId)) {
+                log.warn("Resume for {} starting but session is no longer PROCESSING — aborting without further work", sessionId);
+                return;
+            }
+
+            // --- Recover the original plan from the BREAKDOWN step (no LLM call when possible) ---
+            List<SubTopic> planTopics = recoverPlan(session);
+            if (planTopics.isEmpty()) {
+                PlanResult plan = planBreakdown(handle, sessionId, session.getTopic(), 5);
+                // No usable plan was stored — shift any existing marker steps down and insert the new
+                // breakdown at index 0 so step order stays sequential.
+                for (ResearchStep step : session.getSteps()) {
+                    if (step.getOrderIndex() != null) {
+                        step.setOrderIndex(step.getOrderIndex() + 1);
+                    }
+                }
+                ResearchStep breakdownStep = saveStep(session, 0, StepType.BREAKDOWN, "COMPLETED", plan.record());
+                session.addStep(breakdownStep);
+                streamService.sendProgress(sessionId, "Resuming: topic broken down into " + plan.topics().size() + " sub-topics");
+                session = persistChecked(handle, session);
+                planTopics = plan.topics();
+            }
+
+            // --- Reuse completed sub-topics verbatim; re-research failed/missing ones in place ---
+            List<String> findingsBlocks = new ArrayList<>();
+            List<String> failedSubTopics = new ArrayList<>();
+            LinkedHashMap<String, String> aggregatedSources = new LinkedHashMap<>(); // normalized URL -> "Title — URL" line
+
+            for (int i = 0; i < planTopics.size(); i++) {
+                SubTopic subTopic = planTopics.get(i);
+                try {
+                    handle.ensureActive(); // checkpoint before each sub-topic round batch
+                    ResearchStep existing = findSubTopicStep(session, i + 1);
+                    String reusedNote = (existing != null && "COMPLETED".equals(existing.getStatus())
+                            && existing.getContent() != null && !existing.getContent().isBlank())
+                            ? existing.getContent() : null;
+
+                    if (reusedNote != null) {
+                        // Completed in the original run — reuse verbatim and re-parse its captured sources.
+                        findingsBlocks.add(buildFindingBlock(i + 1, subTopic.title(), "COMPLETED", reusedNote));
+                        collectSourceInfo(reusedNote, aggregatedSources);
+                        streamService.sendProgress(sessionId, "Resuming: reusing completed research on " + subTopic.title());
+                    } else {
+                        ResearchRoundResult roundResult = researchOneSubTopic(handle, sessionId, subTopic, defaultMaxIterations);
+                        findingsBlocks.add(buildFindingBlock(i + 1, subTopic.title(), "COMPLETED", roundResult.note()));
+                        aggregatedSources.putAll(roundResult.sourcesByUrl());
+                        upsertSubTopicStep(session, i + 1, "COMPLETED", roundResult.note());
+                        streamService.sendProgress(sessionId, "Completed research on: " + subTopic.title());
+                    }
+                } catch (ResearchCancelledException e) {
+                    throw e; // user cancellation is not a sub-topic failure — stop the whole run
+                } catch (Exception e) {
+                    log.error("Sub-topic research failed for '{}' on resumed session {}: {}",
+                            subTopic.title(), sessionId, e.getMessage(), e);
+                    upsertSubTopicStep(session, i + 1, "FAILED", null);
+                    streamService.sendProgress(sessionId, "Research on '" + subTopic.title() + "' failed after retries");
+                    failedSubTopics.add(subTopic.title());
+                }
+                session = persistChecked(handle, session); // Persist each sub-topic incrementally (adopted instance)
+            }
+
+            // --- Quality gate + streamed report (shared with the fresh-run path) ---
+            PostResearchResult post = runPostResearchStages(handle, session, session.getTopic(), planTopics.size(),
+                    findingsBlocks, failedSubTopics, aggregatedSources);
+            session = post.session();
+            reportStreamStarted = post.reportStreamStarted();
+
+        } catch (ResearchCancelledException e) {
+            log.info("Resume pipeline for session {} stopped due to user cancellation", sessionId);
+            reAssertCancellation(sessionId);
+        } catch (Exception e) {
+            log.error("Error during research resume for session {}", sessionId, e);
+            if (session != null && ownsSessionState(sessionId)) {
+                try {
+                    session.fail(e.getMessage());
+                    session.addStep(saveStep(session, session.getSteps().size(), StepType.BREAKDOWN, "FAILED", e.getMessage()));
+                    persist(session); // embedded steps are written with the document (no further saves after this point)
+                } catch (Exception persistError) {
+                    log.error("Failed to persist failure state for resumed session {}", sessionId, persistError);
+                }
+            } else if (session != null) {
+                log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
+            }
+            streamService.sendError(sessionId, "Research resume failed: " + e.getMessage());
+        } finally {
+            // Release the registry entry unless the report stream has taken ownership of it.
+            if (!reportStreamStarted) {
+                cancellationRegistry.unregister(sessionId, handle);
+            }
+        }
+    }
+
+    /**
+     * Parse the stored BREAKDOWN step JSON ({@code {topic, subTopics:[...]}}) back into sub-topics.
+     * Returns an empty list when no completed breakdown step exists or its content is unparseable —
+     * the caller then falls back to a fresh LLM breakdown.
+     */
+    private List<SubTopic> recoverPlan(ResearchSession session) {
+        if (session.getSteps() == null) {
+            return List.of();
+        }
+        for (ResearchStep step : session.getSteps()) {
+            if (step.getType() != StepType.BREAKDOWN || !"COMPLETED".equals(step.getStatus())
+                    || step.getContent() == null || step.getContent().isBlank()) {
+                continue;
+            }
+            try {
+                JsonNode subTopics = objectMapper.readTree(step.getContent()).get("subTopics");
+                if (subTopics == null || !subTopics.isArray() || subTopics.isEmpty()) {
+                    continue;
+                }
+                // Jackson 3's ObjectMapper needs its own TypeReference (not Spring's).
+                List<SubTopic> topics = normalizePlan(objectMapper.convertValue(subTopics,
+                        new TypeReference<List<SubTopic>>() {}));
+                if (!topics.isEmpty()) {
+                    log.info("Recovered {} planned sub-topics from stored breakdown for session {}",
+                            topics.size(), session.getId());
+                    return topics;
+                }
+            } catch (Exception e) {
+                log.warn("Could not parse stored breakdown plan for session {}: {}", session.getId(), e.getMessage());
+            }
+        }
+        return List.of();
+    }
+
+    /** The SUBTOPIC step at the given orderIndex, if any. */
+    private ResearchStep findSubTopicStep(ResearchSession session, int orderIndex) {
+        if (session.getSteps() == null) {
+            return null;
+        }
+        for (ResearchStep step : session.getSteps()) {
+            if (step.getType() == StepType.SUBTOPIC && Integer.valueOf(orderIndex).equals(step.getOrderIndex())) {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    /** Update the SUBTOPIC step at orderIndex in place, or append a new one when absent. */
+    private void upsertSubTopicStep(ResearchSession session, int orderIndex, String status, String content) {
+        ResearchStep existing = findSubTopicStep(session, orderIndex);
+        if (existing != null) {
+            existing.setStatus(status);
+            existing.setContent(content);
+            return;
+        }
+        session.addStep(saveStep(session, orderIndex, StepType.SUBTOPIC, status, content));
+    }
+
+    /**
+     * Shared tail of the pipeline (fresh run and resume): total-failure handling, quality gate with
+     * supplementary research, and streamed final report generation.
+     *
+     * @return the outcome — whether the report stream started (from then on the STREAM owns
+     *         cancellation-registry cleanup via its terminal callbacks) and the latest saved
+     *         session instance (callers adopt it so later saves never clobber newer state)
+     */
+    private PostResearchResult runPostResearchStages(ResearchCancellationRegistry.CancellationHandle handle,
+                                                     ResearchSession session, String topic, int totalSubTopics,
+                                                     List<String> findingsBlocks, List<String> failedSubTopics,
+                                                     LinkedHashMap<String, String> aggregatedSources) {
+        UUID sessionId = session.getId();
+
+        if (findingsBlocks.isEmpty()) {
+            String reason = "All sub-topic research attempts failed: " + String.join("; ", failedSubTopics);
+            log.error("Session {}: {}", sessionId, reason);
+            // Total failure — nothing to synthesize. Guarded: a cancelled/terminal run is not overwritten with FAILED.
+            if (ownsSessionState(sessionId)) {
+                session.fail(reason);
+                try {
+                    session = persist(session); // persist FAILED status (was silently lost before)
+                } catch (Exception persistError) {
+                    log.error("Failed to persist total-failure state for session {}", sessionId, persistError);
+                }
+            } else {
+                log.info("Skipping FAILED persistence for cancelled/terminal session {}", sessionId);
+            }
+            streamService.sendError(sessionId, reason);
+            return new PostResearchResult(false, session);
+        }
+
+        // Quality gate — structured LLM evaluation of research findings.
+        QualityEvalResult eval = null;
+        if (qualityEvalEnabled) {
+            handle.ensureActive();
+            streamService.sendProgress(sessionId, "Evaluating research quality...");
+            try {
+                eval = evaluateResearchQuality(handle, sessionId, topic, findingsBlocks, aggregatedSources.values());
+
+                // Persist the eval as a step so it's visible in the UI.
+                String evalContent = renderEvalForStep(eval);
+                ResearchStep evalStep = saveStep(session, totalSubTopics + 1, StepType.QUALITY_EVAL, "COMPLETED", evalContent);
+                session.addStep(evalStep);
+                session = persistChecked(handle, session);
+
+                if (!eval.passed()) {
+                    // Quality below threshold — run targeted supplementary research on weak areas.
+                    streamService.sendProgress(sessionId, "Quality gate: score " + eval.overallScore() + "/10 — running supplementary research...");
+                    List<String> supplemented = runSupplementaryResearch(handle, sessionId, topic, eval, findingsBlocks, aggregatedSources);
+                    if (!supplemented.isEmpty()) {
+                        findingsBlocks.addAll(supplemented);
+                    }
+                } else {
+                    streamService.sendProgress(sessionId, "Quality gate passed: score " + eval.overallScore() + "/10");
+                }
+            } catch (ResearchCancelledException e) {
+                throw e;
+            } catch (Exception e) {
+                // Quality eval failure must NOT block the pipeline — log and continue to report generation.
+                log.warn("Quality evaluation failed for session {}; proceeding without gate: {}", sessionId, e.getMessage());
+                streamService.sendProgress(sessionId, "Quality evaluation skipped (non-fatal error)");
+            }
+        }
+
+        // Generate final report (streamed) with References built from captured sources.
+        handle.ensureActive(); // checkpoint before starting the long-running report stream
+        generateFinalReport(handle, sessionId, session, topic, totalSubTopics,
+                findingsBlocks, failedSubTopics, aggregatedSources.values(), eval);
+        // From here on the STREAM owns registry cleanup (its terminal callbacks unregister).
+        return new PostResearchResult(true, session);
+    }
+
+    /** Outcome of {@link #runPostResearchStages}: stream ownership flag + latest saved session instance. */
+    private record PostResearchResult(boolean reportStreamStarted, ResearchSession session) {
     }
 
     // ==================== STEP 1: BREAKDOWN PLANNING ====================
@@ -503,7 +763,8 @@ public class ResearchOrchestratorService {
     // ==================== STEP 3: FINAL REPORT STREAMING ====================
 
     private void generateFinalReport(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, ResearchSession session, String topic, int totalSubTopics,
-                                     List<String> findingsBlocks, List<String> failedSubTopics, Iterable<String> aggregatedSources) {
+                                     List<String> findingsBlocks, List<String> failedSubTopics, Iterable<String> aggregatedSources,
+                                     QualityEvalResult eval) {
         StringBuilder input = new StringBuilder();
         input.append("Research Topic: ").append(topic).append("\n\n");
 
@@ -529,6 +790,16 @@ public class ResearchOrchestratorService {
         }
         if (!any) {
             input.append("(no page URLs were captured during research — rely on search snippets and note limited evidence depth under Research Gaps & Confidence)");
+        }
+
+        // Incorporate quality eval feedback into the synthesis prompt so the report addresses identified gaps.
+        if (eval != null && !eval.issues().isEmpty()) {
+            input.append("\n## Quality Evaluation Feedback (address these in your report)\n");
+            input.append("Issues found: ").append(String.join(", ", eval.issues())).append("\n");
+            if (eval.recommendations() != null && !eval.recommendations().isEmpty()) {
+                input.append("Recommendations to emphasize: ").append(String.join("; ", eval.recommendations())).append("\n");
+            }
+            input.append("Ensure the final report is descriptive with suitable details, directly addresses these issues, and provides thorough coverage of the topic.\n");
         }
 
         log.info("Starting final report generation for session {}", sessionId);
@@ -573,7 +844,7 @@ public class ResearchOrchestratorService {
                                     String fullReport = reportBuffer.get().toString();
                                     session.setFinalReport(fullReport);
                                     session.complete();
-                                    session.addStep(saveStep(session, totalSubTopics + 1, StepType.FINAL_REPORT, "COMPLETED", fullReport));
+                                    session.addStep(saveStep(session, session.getSteps().size(), StepType.FINAL_REPORT, "COMPLETED", fullReport));
                                     persist(session); // embedded steps are written with the document
 
                                     // Send final REPORT_DONE event with the complete report
@@ -659,6 +930,27 @@ public class ResearchOrchestratorService {
         throw new IllegalStateException("Structured LLM call failed after " + MAX_LLM_ATTEMPTS + " attempts", last);
     }
 
+    /**
+     * Same as {@link #llmStructuredCallWithRetry} but for a concrete class type.
+     */
+    private <T> T llmStructuredCallWithRetry(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, String systemPrompt,
+                                             String userMessage, Double temperature, Class<T> type) {
+        Exception last = null;
+        for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
+            handle.ensureActive();
+            try {
+                return llmGateway.completeStructured(sessionId, systemPrompt, userMessage, temperature, type);
+            } catch (RuntimeException e) {
+                last = e;
+                log.warn("Structured LLM call (class {}) attempt {}/{} failed: {}", type.getSimpleName(), attempt, MAX_LLM_ATTEMPTS, e.getMessage());
+                if (attempt < MAX_LLM_ATTEMPTS) {
+                    sleepWithBackoff(attempt);
+                }
+            }
+        }
+        throw new IllegalStateException("Structured LLM call failed after " + MAX_LLM_ATTEMPTS + " attempts", last);
+    }
+
     private void sleepWithBackoff(int attempt) {
         try {
             Thread.sleep(RETRY_BACKOFF_MILLIS * attempt);
@@ -722,6 +1014,169 @@ public class ResearchOrchestratorService {
         }
 
         return sb.toString();
+    }
+
+    // ==================== QUALITY EVALUATION GATE ====================
+
+    private static final String QUALITY_EVAL_PROMPT = """
+            You are a research quality evaluator. Assess the accumulated research findings against the original topic.
+
+            Score each dimension from 0 to 10 (integers only):
+            - relevanceScore: How directly do the findings address the original research topic? Penalize off-topic content, tangential digressions, or generic filler.
+            - depthScore: Do the findings contain specific facts, data points, examples, and descriptive detail? Penalize surface-level summaries without substance.
+            - coverageScore: Does the set of sub-topics adequately cover all important dimensions of the research topic? Penalize missing angles that a thorough investigation would include.
+            - sourceQualityScore: Are the cited sources authoritative, relevant, and diverse (not just one domain repeated)? Penalize low-authority or irrelevant sources.
+            - overallScore: Your composite judgment of whether this research is sufficient to produce a high-quality report.
+
+            Then:
+            - passed: true if overallScore >= 7 AND no dimension scored below 4. Set false if any critical gap exists.
+            - issues: List specific problems found (e.g., "Sub-topic X lacks quantitative data", "No sources from authoritative domains for Y", "Findings on Z are generic and not topic-specific"). Empty list if none.
+            - recommendations: Targeted improvements — what additional research or emphasis would make the report more descriptive and complete. Be specific about what to look for.
+
+            Be strict but fair. A score of 7+ means the research can produce a solid report as-is. Below 7 means there are meaningful gaps that should be addressed before synthesis.
+            """;
+
+    /**
+     * Run a structured LLM quality evaluation on the accumulated research findings.
+     * Returns a {@link QualityEvalResult} with scores, pass/fail, issues and recommendations.
+     */
+    private QualityEvalResult evaluateResearchQuality(ResearchCancellationRegistry.CancellationHandle handle,
+                                                      UUID sessionId, String topic,
+                                                      List<String> findingsBlocks, Iterable<String> aggregatedSources) {
+        StringBuilder userMessage = new StringBuilder();
+        userMessage.append("Research Topic: ").append(topic).append("\n\n");
+
+        userMessage.append("## Accumulated Findings\n\n");
+        for (String block : findingsBlocks) {
+            userMessage.append(block).append("\n\n");
+        }
+
+        userMessage.append("## Captured Sources\n");
+        int n = 1;
+        for (String source : aggregatedSources) {
+            userMessage.append(n++).append(". ").append(source).append("\n");
+        }
+
+        log.info("Running quality evaluation for session {}", sessionId);
+        QualityEvalResult result = llmStructuredCallWithRetry(handle, sessionId, QUALITY_EVAL_PROMPT, userMessage.toString(),
+                (Double) TEMP_PLANNING, QualityEvalResult.class);
+
+        // Guard against null fields from a malformed response.
+        if (result == null) {
+            log.warn("Quality eval returned null for session {}; defaulting to pass", sessionId);
+            return new QualityEvalResult(7, 7, 7, 7, 7, true, List.of(), List.of());
+        }
+
+        // Clamp scores to [0, 10] and ensure overall is consistent.
+        int relevance = clampScore(result.relevanceScore());
+        int depth = clampScore(result.depthScore());
+        int coverage = clampScore(result.coverageScore());
+        int sourceQuality = clampScore(result.sourceQualityScore());
+        int overall = clampScore(result.overallScore());
+
+        // Enforce the pass rule: overall >= 7 AND no dimension below 4.
+        boolean passed = overall >= qualityEvalMinScore && relevance >= 4 && depth >= 4 && coverage >= 4 && sourceQuality >= 4;
+
+        log.info("Quality eval for session {}: relevance={}, depth={}, coverage={}, sources={}, overall={}, passed={}",
+                sessionId, relevance, depth, coverage, sourceQuality, overall, passed);
+
+        return new QualityEvalResult(relevance, depth, coverage, sourceQuality, overall,
+                passed, result.issues() != null ? result.issues() : List.of(),
+                result.recommendations() != null ? result.recommendations() : List.of());
+    }
+
+    /**
+     * When the quality gate fails, run targeted supplementary research on the weak areas identified by the evaluator.
+     * Returns a list of additional finding blocks to append to the main findings.
+     */
+    private List<String> runSupplementaryResearch(ResearchCancellationRegistry.CancellationHandle handle,
+                                                  UUID sessionId, String topic, QualityEvalResult eval,
+                                                  List<String> findingsBlocks, LinkedHashMap<String, String> aggregatedSources) {
+        StringBuilder userMessage = new StringBuilder();
+        userMessage.append("Research Topic: ").append(topic).append("\n\n");
+        userMessage.append("The quality evaluation identified these issues:\n");
+        for (String issue : eval.issues()) {
+            userMessage.append("- ").append(issue).append("\n");
+        }
+        if (eval.recommendations() != null && !eval.recommendations().isEmpty()) {
+            userMessage.append("\nRecommendations to address:\n");
+            for (String rec : eval.recommendations()) {
+                userMessage.append("- ").append(rec).append("\n");
+            }
+        }
+
+        userMessage.append("\nExisting findings summary (do NOT repeat these):\n");
+        // Include a truncated version of existing findings to avoid context overflow.
+        int totalLen = findingsBlocks.stream().mapToInt(String::length).sum();
+        int maxCharsPerBlock = Math.max(500, 8000 / Math.max(findingsBlocks.size(), 1));
+        for (String block : findingsBlocks) {
+            if (block.length() > maxCharsPerBlock) {
+                userMessage.append(block, 0, maxCharsPerBlock).append("\n[...truncated...]\n\n");
+            } else {
+                userMessage.append(block).append("\n\n");
+            }
+        }
+
+        String system = """
+                You are a meticulous web researcher performing targeted supplementary research. You have two tools:
+                `search` (web search) and `read_url` (fetches full page content).
+
+                The quality evaluation of existing research identified specific gaps and weaknesses.
+                Your job is to fill ONLY those gaps: run targeted searches and read relevant pages that address the
+                issues and recommendations listed. Do not repeat what was already found.
+
+                Output your findings with exactly these three parts — nothing else:
+                1. Findings — specific, factual key findings as bullet points; attribute important claims inline like (source: <domain>).
+                2. Sources Consulted — one entry per page you ACTUALLY read, formatted "- Title — https://full/url".
+                3. Open Questions — any remaining gaps after this supplementary pass. Write "None" if all issues are addressed.
+                """;
+
+        try {
+            String roundText = researchRoundText(handle, sessionId,
+                    new SubTopic(99, "Supplementary Research", "Targeted gap-filling based on quality eval", List.of()),
+                    1, system, userMessage.toString());
+
+            // Collect any new sources from the supplementary pass.
+            collectSourceInfo(roundText, aggregatedSources);
+
+            String block = buildFindingBlock(findingsBlocks.size() + 1, "Supplementary Research (Quality Gate)", "COMPLETED", roundText);
+            log.info("Supplementary research produced {} chars of findings for session {}", roundText.length(), sessionId);
+            return List.of(block);
+        } catch (Exception e) {
+            log.warn("Supplementary research failed for session {}; continuing without it: {}", sessionId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** Render the eval result as a human-readable step content string. */
+    private String renderEvalForStep(QualityEvalResult eval) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## Quality Evaluation\n\n");
+        sb.append("| Dimension | Score |\n|---|---|\n");
+        sb.append("| Relevance | ").append(eval.relevanceScore()).append("/10 |\n");
+        sb.append("| Depth | ").append(eval.depthScore()).append("/10 |\n");
+        sb.append("| Coverage | ").append(eval.coverageScore()).append("/10 |\n");
+        sb.append("| Source Quality | ").append(eval.sourceQualityScore()).append("/10 |\n");
+        sb.append("| **Overall** | **").append(eval.overallScore()).append("/10** |\n\n");
+        sb.append("**Result: ").append(eval.passed() ? "PASSED" : "NEEDS IMPROVEMENT").append("**\n\n");
+        if (!eval.issues().isEmpty()) {
+            sb.append("### Issues Found\n");
+            for (String issue : eval.issues()) {
+                sb.append("- ").append(issue).append("\n");
+            }
+            sb.append("\n");
+        }
+        if (!eval.recommendations().isEmpty()) {
+            sb.append("### Recommendations\n");
+            for (String rec : eval.recommendations()) {
+                sb.append("- ").append(rec).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    private int clampScore(int value) {
+        return Math.max(0, Math.min(10, value));
     }
 
     /** Breakdown stage result: planned sub-topics plus a record string for the BREAKDOWN step. */

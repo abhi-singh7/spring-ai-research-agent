@@ -8,6 +8,7 @@ import com.researchagent.model.dto.ResearchSessionDetailDTO;
 import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
+import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.service.ResearchOrchestratorService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -93,6 +94,40 @@ public class ResearchController {
         response.setStatus(session.getStatus().name());
         // Stream URL will be discovered via SSE endpoint or polling fallback
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * Resume a FAILED or CANCELLED research session. The atomic claim flips the session back to
+     * PROCESSING (clearing the failure report) and the pipeline continues from the stored steps:
+     * completed sub-topics are reused, failed/missing ones are re-researched, then the quality gate
+     * and final report run as usual. 409 when the session is COMPLETED or already PROCESSING.
+     */
+    @PostMapping("/{sessionId}/resume")
+    public ResponseEntity<ResearchResponse> resumeResearch(@PathVariable UUID sessionId) {
+        ResearchSession session = orchestratorService.getResearch(sessionId);
+        if (session == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String status = session.getStatus().name();
+        if (!"FAILED".equals(status) && !"CANCELLED".equals(status)) {
+            // COMPLETED (nothing to resume), PROCESSING/PENDING (already running)
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
+
+        try {
+            session = orchestratorService.resumeResearch(sessionId);
+        } catch (IllegalStateException e) {
+            // Lost the atomic claim race — a concurrent resume won between our check and the claim.
+            log.info("Resume of {} lost the claim race: {}", sessionId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
+
+        ResearchResponse response = new ResearchResponse();
+        response.setId(session.getId());
+        response.setTopic(session.getTopic());
+        response.setStatus(ResearchStatus.PROCESSING.name());
+        return ResponseEntity.ok(response);
     }
 
     /**

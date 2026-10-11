@@ -6,6 +6,7 @@ import tools.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.researchagent.service.WebContentCacheService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.tool.annotation.Tool;
@@ -36,6 +37,11 @@ import java.util.regex.Pattern;
  * Tavily (hosted search API) — moving on whenever a backend errors or returns no results. The returned text is always DECISIVE — either formatted
  * results from the first successful backend, or an explicit "no results from any backend" verdict listing
  * per-backend reasons — so the LLM never has to (or wants to) retry the same dead search method in a loop.</p>
+ *
+ * <p>Before formatting, every result URL is consulted against the web content cache
+ * ({@link WebContentCacheService}, collection {@code web_page_cache}, ~1-week Mongo TTL); hits get their
+ * cached content inlined under the result (4 000 chars per hit, 16 000 total) so the LLM can answer
+ * directly without a {@code read_url} round-trip for already-known pages.</p>
  */
 @Component
 @Slf4j
@@ -55,6 +61,10 @@ public class WebSearchTool {
     private static final Pattern DDG_SNIPPET = Pattern.compile(
             "class=\"result__snippet\"[^>]*>(.*?)</span>", Pattern.DOTALL);
 
+    /** Cached-content inline caps: per hit and across the whole result set. */
+    private static final int CACHED_PER_HIT_CHARS = 4_000;
+    private static final int CACHED_TOTAL_CHARS = 16_000;
+
     private final McpToolRouter router;
     private final String firecrawlBaseUrl;
     private final String ddgBaseUrl;
@@ -62,21 +72,24 @@ public class WebSearchTool {
     private final String ollamaApiKey;
     private final String tavilyBaseUrl;
     private final String tavilyApiKey;
+    private final WebContentCacheService cache;
 
     @Autowired
     public WebSearchTool(McpToolRouter router,
                           @Value("${app.search.firecrawl-base-url:http://localhost:3002}") String firecrawlBaseUrl,
                           @Value("${app.search.ollama-base-url:https://ollama.com}") String ollamaBaseUrl,
                           @Value("${app.search.ollama-api-key:}") String ollamaApiKey,
-                          @Value("${app.search.tavily-api-key:}") String tavilyApiKey) {
+                          @Value("${app.search.tavily-api-key:}") String tavilyApiKey,
+                          WebContentCacheService cache) {
         this(router, firecrawlBaseUrl, "https://duckduckgo.com", ollamaBaseUrl, ollamaApiKey,
-                "https://api.tavily.com", tavilyApiKey);
+                "https://api.tavily.com", tavilyApiKey, cache);
     }
 
     /** Package-private constructor for tests — endpoints overridable so no real network is needed. */
     WebSearchTool(McpToolRouter router, String firecrawlBaseUrl, String ddgBaseUrl,
                   String ollamaBaseUrl, String ollamaApiKey,
-                  String tavilyBaseUrl, String tavilyApiKey) {
+                  String tavilyBaseUrl, String tavilyApiKey,
+                  WebContentCacheService cache) {
         this.router = router;
         this.firecrawlBaseUrl = firecrawlBaseUrl;
         this.ddgBaseUrl = ddgBaseUrl;
@@ -84,12 +97,16 @@ public class WebSearchTool {
         this.ollamaApiKey = (ollamaApiKey == null || ollamaApiKey.isBlank()) ? "" : ollamaApiKey.strip();
         this.tavilyBaseUrl = tavilyBaseUrl;
         this.tavilyApiKey = (tavilyApiKey == null || tavilyApiKey.isBlank()) ? "" : tavilyApiKey.strip();
+        this.cache = cache;
     }
 
-    /** Outcome of one backend attempt: either formatted results or a human-readable failure reason. */
-    private record SearchOutcome(boolean found, String payload) {
-        static SearchOutcome ok(String resultsText) { return new SearchOutcome(true, resultsText); }
-        static SearchOutcome fail(String reason) { return new SearchOutcome(false, reason); }
+    /** One parsed search result: title, URL and snippet as returned by the backend. */
+    private record SearchHit(String title, String url, String snippet) { }
+
+    /** Outcome of one backend attempt: either structured hits or a human-readable failure reason. */
+    private record SearchOutcome(boolean found, String failReason, List<SearchHit> hits) {
+        static SearchOutcome ok(List<SearchHit> hits) { return new SearchOutcome(true, null, hits); }
+        static SearchOutcome fail(String reason) { return new SearchOutcome(false, reason, List.of()); }
     }
 
     /**
@@ -125,9 +142,9 @@ public class WebSearchTool {
 
                 if (outcome.found()) {
                     log.info("Search via '{}' succeeded for query: {}", backend, query);
-                    return outcome.payload();
+                    return formatHits(outcome.hits());
                 }
-                failures.add(backend + ": " + outcome.payload());
+                failures.add(backend + ": " + outcome.failReason());
             }
 
             // All backends exhausted in this single call — return a DECISIVE verdict so the LLM does not retry.
@@ -158,6 +175,42 @@ public class WebSearchTool {
         }
 
         return "search-fallback";
+    }
+
+    /**
+     * Format structured hits for the LLM. For every hit whose URL has a non-expired web content cache
+     * entry, the cached content is inlined under the result (capped at {@link #CACHED_PER_HIT_CHARS} per
+     * hit and {@link #CACHED_TOTAL_CHARS} total) so the LLM can use it directly instead of calling
+     * read_url. Hits without a cache entry are formatted exactly as before.
+     */
+    private String formatHits(List<SearchHit> hits) {
+        StringBuilder sb = new StringBuilder();
+        int idx = 0;
+        int cachedBudget = CACHED_TOTAL_CHARS;
+        for (SearchHit hit : hits) {
+            if (idx >= MAX_RESULTS) break;
+            idx++;
+            sb.append(idx).append(". ").append(hit.title()).append('\n');
+            if (!hit.url().isBlank()) {
+                sb.append("   URL: ").append(hit.url()).append('\n');
+            }
+            if (!hit.snippet().isBlank()) {
+                sb.append("   Snippet: ").append(hit.snippet()).append('\n');
+            }
+            if (cachedBudget > 0) {
+                var cached = cache.find(hit.url());
+                if (cached.isPresent()) {
+                    String content = cached.get();
+                    if (content.length() > CACHED_PER_HIT_CHARS) {
+                        content = content.substring(0, CACHED_PER_HIT_CHARS).trim() + "...";
+                    }
+                    int take = Math.min(content.length(), cachedBudget);
+                    sb.append("   Cached content: ").append(content, 0, take).append('\n');
+                    cachedBudget -= take;
+                }
+            }
+        }
+        return sb.toString();
     }
 
     /**
@@ -206,7 +259,7 @@ public class WebSearchTool {
             }
 
             String rawResponse = read(conn);
-            return parseResultsJson(rawResponse, "Ollama");
+            return parseResultsJson(rawResponse);
 
         } catch (Exception e) {
             return SearchOutcome.fail(e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -227,16 +280,12 @@ public class WebSearchTool {
             }
 
             String html = read(conn);
-            List<String> lines = parseDuckDuckGoHtml(html);
-            if (lines.isEmpty()) {
+            List<SearchHit> hits = parseDuckDuckGoHtml(html);
+            if (hits.isEmpty()) {
                 return SearchOutcome.fail("returned no results");
             }
 
-            StringBuilder sb = new StringBuilder();
-            for (String line : lines) {
-                sb.append(line).append('\n');
-            }
-            return SearchOutcome.ok(sb.toString());
+            return SearchOutcome.ok(hits);
 
         } catch (Exception e) {
             return SearchOutcome.fail(e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -265,7 +314,7 @@ public class WebSearchTool {
             }
 
             String rawResponse = read(conn);
-            return parseResultsJson(rawResponse, "Tavily");
+            return parseResultsJson(rawResponse);
 
         } catch (Exception e) {
             return SearchOutcome.fail(e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -274,9 +323,9 @@ public class WebSearchTool {
 
     /**
      * Parse a {@code {results:[{title,url,content}]}} payload (Ollama web_search and Tavily search both use this
-     * shape) into structured text for the LLM.
+     * shape) into structured hits.
      */
-    private SearchOutcome parseResultsJson(String rawResponse, String engineLabel) {
+    private SearchOutcome parseResultsJson(String rawResponse) {
         if (rawResponse == null || rawResponse.isBlank()) {
             return SearchOutcome.fail("empty response");
         }
@@ -290,25 +339,16 @@ public class WebSearchTool {
                 return SearchOutcome.fail("returned no results");
             }
 
-            List<String> lines = new ArrayList<>();
-            int idx = 0;
+            List<SearchHit> hits = new ArrayList<>();
             for (JsonNode result : results) {
-                if (idx >= MAX_RESULTS) break;
-                String title = result.path("title").asText("");
-                String url = result.path("url").asText("");
-                String snippet = result.path("content").asText("");
-
-                lines.add((idx + 1) + ". " + title);
-                if (!url.isBlank()) {
-                    lines.add("   URL: " + url);
-                }
-                if (!snippet.isBlank()) {
-                    lines.add("   Snippet: " + snippet);
-                }
-                idx++;
+                if (hits.size() >= MAX_RESULTS) break;
+                hits.add(new SearchHit(
+                        result.path("title").asText(""),
+                        result.path("url").asText(""),
+                        result.path("content").asText("")));
             }
 
-            return SearchOutcome.ok(String.join("\n", lines));
+            return SearchOutcome.ok(hits);
 
         } catch (Exception e) {
             // Fall back to raw response — may still be useful for the LLM if it looks like result data.
@@ -316,14 +356,14 @@ public class WebSearchTool {
             if (trimmed.isEmpty() || !looksLikeResults(trimmed)) {
                 return SearchOutcome.fail("unparseable JSON");
             }
-            return SearchOutcome.ok(engineLabel + " raw response:\n" + trimmed);
+            return SearchOutcome.ok(List.of(new SearchHit("Raw response", "", trimmed)));
         }
     }
 
     /**
      * Parse DuckDuckGo HTML results: result anchors (/l/?uddg=...) paired with snippets, in page order.
      */
-    private List<String> parseDuckDuckGoHtml(String html) {
+    private List<SearchHit> parseDuckDuckGoHtml(String html) {
         if (html == null || html.isBlank()) return List.of();
 
         // Capture [urlEncoded, title] pairs immediately — the Matcher must advance per match.
@@ -342,7 +382,7 @@ public class WebSearchTool {
         }
 
         LinkedHashSet<String> seenUrls = new LinkedHashSet<>();
-        List<String> lines = new ArrayList<>();
+        List<SearchHit> hits = new ArrayList<>();
         int idx = 0;
         for (String[] link : found) {
             String url;
@@ -353,16 +393,13 @@ public class WebSearchTool {
             }
             if (!seenUrls.add(url)) continue;
 
-            String title = link[1];
-            int n = idx + 1;
-            lines.add(n + ". " + title);
-            if (!url.isBlank()) lines.add("   URL: " + url);
-            if (idx < snippets.size() && !snippets.get(idx).isBlank()) {
-                lines.add("   Snippet: " + snippets.get(idx));
-            }
+            hits.add(new SearchHit(
+                    link[1],
+                    url,
+                    idx < snippets.size() ? snippets.get(idx) : ""));
             idx++;
         }
-        return lines;
+        return hits;
     }
 
     /** Strip HTML tags and decode common entities so titles/snippets read cleanly for the LLM. */
@@ -401,7 +438,7 @@ public class WebSearchTool {
                 return SearchOutcome.fail("returned no results");
             }
 
-            List<String> lines = new ArrayList<>();
+            List<SearchHit> hits = new ArrayList<>();
             int idx = 0;
             for (JsonNode result : results) {
                 if (idx >= MAX_RESULTS) break;
@@ -410,17 +447,11 @@ public class WebSearchTool {
                 String snippet = result.path("description").asText(
                         result.path("content").asText(result.path("snippet").asText("")));
 
-                lines.add((idx + 1) + ". " + title);
-                if (!url.isBlank()) {
-                    lines.add("   URL: " + url);
-                }
-                if (!snippet.isBlank()) {
-                    lines.add("   Snippet: " + snippet);
-                }
+                hits.add(new SearchHit(title, url, snippet));
                 idx++;
             }
 
-            return SearchOutcome.ok(String.join("\n", lines));
+            return SearchOutcome.ok(hits);
 
         } catch (Exception e) {
             // Fall back to raw response — may still be useful for the LLM if it looks like result data.
@@ -428,7 +459,7 @@ public class WebSearchTool {
             if (trimmed.isEmpty() || !looksLikeResults(trimmed)) {
                 return SearchOutcome.fail("unparseable JSON");
             }
-            return SearchOutcome.ok("Firecrawl raw response:\n" + trimmed);
+            return SearchOutcome.ok(List.of(new SearchHit("Firecrawl raw response", "", trimmed)));
         }
     }
 

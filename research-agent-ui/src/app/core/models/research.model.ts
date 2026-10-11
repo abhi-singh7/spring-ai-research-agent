@@ -20,7 +20,7 @@ export interface HistoryDetailStep {
   content?: string;
 }
 
-export type StepType = 'BREAKDOWN' | 'SEARCH' | 'READ' | 'SYNTHESIS' | 'SUBTOPIC' | 'FINAL_REPORT';
+export type StepType = 'BREAKDOWN' | 'SEARCH' | 'READ' | 'SYNTHESIS' | 'SUBTOPIC' | 'QUALITY_EVAL' | 'FINAL_REPORT';
 
 export interface ResearchStartRequest {
   topic: string;

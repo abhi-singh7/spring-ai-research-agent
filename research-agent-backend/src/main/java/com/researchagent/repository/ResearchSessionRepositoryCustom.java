@@ -19,4 +19,15 @@ public interface ResearchSessionRepositoryCustom {
      *         terminal state first and nothing was changed
      */
     int markCancelledIfProcessing(UUID id, LocalDateTime completedAt, String finalReport);
+
+    /**
+     * Atomically claim a session for resume: transition it back to PROCESSING only if it is currently
+     * FAILED or CANCELLED, clearing the failure report and terminal timestamp. The conditional
+     * updateFirst() matches at most one document, so concurrent resume requests cannot both win —
+     * the loser sees 0 matched documents.
+     *
+     * @return matched document count — 0 means the session is not in a resumable state (e.g. already
+     *         PROCESSING/COMPLETED, or a concurrent resume won the race) and nothing was changed
+     */
+    int markResumableIfTerminal(UUID id, LocalDateTime updatedAt);
 }

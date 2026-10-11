@@ -1,5 +1,5 @@
 import { Component, inject, OnInit, signal } from '@angular/core';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -40,6 +40,19 @@ import { trigger, transition, style, animate } from '@angular/animations';
             </span>
           </div>
         </mat-card>
+
+        <!-- Resume action — failed/cancelled sessions can continue from their stored steps -->
+        @if (researchSession()!.status === 'FAILED' || researchSession()!.status === 'CANCELLED') {
+          <div class="resume-section" [@fadeIn]>
+            <button mat-raised-button color="primary" [disabled]="resuming()" (click)="onResume()">
+              <mat-icon>play_arrow</mat-icon>
+              {{ resuming() ? 'Resuming…' : 'Resume research' }}
+            </button>
+            @if (resumeError()) {
+              <span class="resume-error">{{ resumeError() }}</span>
+            }
+          </div>
+        }
 
         <!-- Steps list — only for completed sessions -->
         @if (researchSession()!.status === 'COMPLETED') {
@@ -104,6 +117,12 @@ import { trigger, transition, style, animate } from '@angular/animations';
       .cancelled { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
     }
 
+    /* Resume section */
+    .resume-section { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .resume-section button { border-radius: 8px !important; font-weight: 500; text-transform: none; letter-spacing: 0.3px; }
+    .resume-error { color: #c62828; font-size: 0.9rem; }
+    @media (prefers-color-scheme: dark) { .resume-error { color: #ef5350; } }
+
     /* Sections */
     .steps-section { margin-bottom: 24px; }
     .report-section { margin-bottom: 24px; }
@@ -130,11 +149,14 @@ import { trigger, transition, style, animate } from '@angular/animations';
 export class HistoryDetailComponent {
 
   private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private researchService = inject(ResearchService);
 
   sessionId!: string;
   isLoading = signal(true);
   hasError = signal(false);
+  resuming = signal(false);
+  resumeError = signal<string | null>(null);
 
   ngOnInit(): void {
     this.sessionId = this.route.snapshot.paramMap.get('sessionId')!;
@@ -158,8 +180,8 @@ export class HistoryDetailComponent {
 
   getStepTypeName(type: string): string {
     const names: Record<string, string> = {
-      BREAKDOWN: 'Breakdown', SUBTOPIC: 'Sub-topic', FINAL_REPORT: 'Final Report',
-      SEARCH: 'Search', READ: 'Read', SYNTHESIS: 'Synthesis'
+      BREAKDOWN: 'Breakdown', SUBTOPIC: 'Sub-topic', QUALITY_EVAL: 'Quality Check',
+      FINAL_REPORT: 'Final Report', SEARCH: 'Search', READ: 'Read', SYNTHESIS: 'Synthesis'
     };
     return names[type] || type;
   }
@@ -186,6 +208,28 @@ export class HistoryDetailComponent {
       PENDING: 'pending', PROCESSING: 'processing', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled'
     };
     return classes[status] || '';
+  }
+
+  /**
+   * Resume a failed/cancelled session: the server flips it back to PROCESSING and reconnects
+   * the SSE stream; on success we jump to the live view which renders the ongoing progress.
+   */
+  onResume(): void {
+    const id = this.sessionId;
+    this.resuming.set(true);
+    this.resumeError.set(null);
+    this.researchService.resumeAndConnect(id).subscribe({
+      next: () => {
+        this.router.navigate(['/research', id]);
+      },
+      error: (err) => {
+        this.resuming.set(false);
+        console.error('[HistoryDetailComponent] Resume failed:', err);
+        this.resumeError.set(err?.status === 409
+          ? 'This session can no longer be resumed.'
+          : 'Could not resume the research. Please try again.');
+      }
+    });
   }
 
   loadSession(): void {

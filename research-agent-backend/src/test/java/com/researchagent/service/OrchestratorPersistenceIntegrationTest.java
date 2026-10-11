@@ -1,5 +1,6 @@
 package com.researchagent.service;
 
+import com.researchagent.model.dto.QualityEvalResult;
 import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.dto.ResearchRoundNote;
 import com.researchagent.model.dto.ResearchRoundNote.SourceRef;
@@ -86,6 +87,9 @@ class OrchestratorPersistenceIntegrationTest {
                 .thenReturn(breakdownPlan());
         when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
                 .thenReturn(researchNote());
+        // Quality eval gate (also uses planning temperature 0.3 but with Class<QualityEvalResult> type)
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), eq(QualityEvalResult.class)))
+                .thenReturn(new QualityEvalResult(8, 8, 8, 8, 9, true, List.of(), List.of()));
         when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(0.4)))
                 .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
 
@@ -104,15 +108,16 @@ class OrchestratorPersistenceIntegrationTest {
             status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
         }
 
-        // Assert: completed, and exactly 4 embedded steps with unique order indexes (no duplicates)
+        // Assert: completed, and exactly 5 embedded steps with unique order indexes (no duplicates)
+        // Steps: BREAKDOWN(0), SUBTOPIC Alpha(1), SUBTOPIC Beta(2), QUALITY_EVAL(3), FINAL_REPORT(4)
         assertEquals(ResearchStatus.COMPLETED, status, "research run must complete without persistence errors");
         ResearchSession finished = sessionRepo.findByIdWithSteps(sessionId);
         List<Integer> orderIndexes = finished.getSteps().stream()
                 .map(step -> step.getOrderIndex())
                 .sorted()
                 .toList();
-        assertTrue(orderIndexes.equals(List.of(0,1,2,3)), "unexpected steps: " + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
-        assertEquals(List.of(0, 1, 2, 3), orderIndexes, "order indexes must be sequential and unique");
+        assertTrue(orderIndexes.equals(List.of(0,1,2,3,4)), "unexpected steps: " + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+        assertEquals(List.of(0, 1, 2, 3, 4), orderIndexes, "order indexes must be sequential and unique");
         assertNotNull(finished.getFinalReport());
         assertTrue(finished.getFinalReport().contains("Final Report"));
     }
@@ -162,6 +167,133 @@ class OrchestratorPersistenceIntegrationTest {
                 .anyMatch(s -> s.getOrderIndex() == 0 && s.getType() == StepType.BREAKDOWN));
         assertEquals(1, cancelled.getSteps().size(), "no steps may be written after the cancel signal: " +
                 cancelled.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+    }
+
+    /**
+     * Resuming a CANCELLED session must recover the plan from the stored BREAKDOWN step (no new planning LLM
+     * call), reuse the completed sub-topic verbatim (no research LLM call for it), re-research only the
+     * missing one IN PLACE, and finish with a normal quality gate + report — no duplicate steps.
+     */
+    @Test
+    void resumeCancelledSession_reusesCompletedSubTopic_andCompletes() throws InterruptedException {
+        ResearchSession session = new ResearchSession();
+        session.setTopic("Resume after cancel check");
+        session.setStatus(ResearchStatus.PROCESSING);
+        sessionRepo.save(session);
+        UUID sessionId = session.getId();
+
+        AtomicInteger planningCalls = new AtomicInteger();
+        AtomicInteger researchCalls = new AtomicInteger();
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+                .thenAnswer(inv -> {
+                    planningCalls.incrementAndGet();
+                    return breakdownPlan();
+                });
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
+                .thenAnswer(inv -> {
+                    if (researchCalls.incrementAndGet() == 2) {
+                        // User cancels while the second sub-topic's research call is in flight.
+                        orchestrator.cancelResearch(sessionId);
+                    }
+                    return researchNote();
+                });
+
+        // Run 1: Alpha completes, cancel lands during Beta's research → CANCELLED with one completed sub-topic step.
+        ResearchRequest request = new ResearchRequest();
+        request.setTopic("Resume after cancel check");
+        request.setSubTopicCount(2);
+        request.setMaxIterations(1);
+        orchestrator.processResearchAsync(sessionId, request);
+        assertSettlesTo(sessionId, ResearchStatus.CANCELLED);
+
+        ResearchSession cancelled = sessionRepo.findByIdWithSteps(sessionId);
+        assertEquals(2, cancelled.getSteps().size(), "expected BREAKDOWN + one completed SUBTOPIC before cancel: "
+                + cancelled.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+        int researchCallsBeforeResume = researchCalls.get(); // Alpha (run 1) + Beta's cancelled in-flight call
+
+        // Run 2 (resume): research now succeeds; the plan must be recovered from the stored breakdown.
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), eq(QualityEvalResult.class)))
+                .thenReturn(new QualityEvalResult(8, 8, 8, 8, 9, true, List.of(), List.of()));
+        when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(0.4)))
+                .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
+
+        ResearchSession resumed = orchestrator.resumeResearch(sessionId);
+        assertEquals(ResearchStatus.PROCESSING, resumed.getStatus());
+        assertSettlesTo(sessionId, ResearchStatus.COMPLETED);
+
+        // No new planning call — the plan came from the stored BREAKDOWN step.
+        assertEquals(1, planningCalls.get(), "resume must recover the plan without a new LLM breakdown");
+        // Alpha was researched in run 1 and reused on resume; only Beta was re-researched (one new call).
+        assertEquals(researchCallsBeforeResume + 1, researchCalls.get(),
+                "resume must reuse the completed sub-topic and research only the missing one");
+
+        ResearchSession finished = sessionRepo.findByIdWithSteps(sessionId);
+        List<Integer> orderIndexes = finished.getSteps().stream().map(s -> s.getOrderIndex()).sorted().toList();
+        assertEquals(List.of(0, 1, 2, 3, 4), orderIndexes, "no duplicate steps after resume: "
+                + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+        assertTrue(finished.getSteps().stream().anyMatch(s -> s.getType() == StepType.SUBTOPIC && s.getOrderIndex() == 2
+                && "COMPLETED".equals(s.getStatus())), "Beta step must be updated in place at orderIndex 2");
+        assertNotNull(finished.getFinalReport());
+        assertTrue(finished.getFinalReport().contains("Final Report"));
+    }
+
+    /**
+     * Resuming a FAILED session (total research failure) must re-research every sub-topic from the recovered
+     * plan and complete normally — the failure report is cleared by the atomic claim.
+     */
+    @Test
+    void resumeFailedSession_rereearchesAllSubTopics_andCompletes() throws InterruptedException {
+        ResearchSession session = new ResearchSession();
+        session.setTopic("Resume after failure check");
+        session.setStatus(ResearchStatus.PROCESSING);
+        sessionRepo.save(session);
+        UUID sessionId = session.getId();
+
+        // Run 1: every research attempt fails → total failure → FAILED.
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), any(ParameterizedTypeReference.class)))
+                .thenReturn(breakdownPlan());
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
+                .thenThrow(new IllegalStateException("simulated research outage"));
+
+        ResearchRequest request = new ResearchRequest();
+        request.setTopic("Resume after failure check");
+        request.setSubTopicCount(2);
+        request.setMaxIterations(1);
+        orchestrator.processResearchAsync(sessionId, request);
+        assertSettlesTo(sessionId, ResearchStatus.FAILED);
+
+        // Run 2 (resume): research now succeeds for both sub-topics.
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.7), eq(ResearchRoundNote.class)))
+                .thenReturn(researchNote());
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), eq(0.3), eq(QualityEvalResult.class)))
+                .thenReturn(new QualityEvalResult(8, 8, 8, 8, 9, true, List.of(), List.of()));
+        when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(0.4)))
+                .thenReturn(reactor.core.publisher.Flux.just("# Final Report\n", "Body text."));
+
+        orchestrator.resumeResearch(sessionId);
+        assertSettlesTo(sessionId, ResearchStatus.COMPLETED);
+
+        ResearchSession finished = sessionRepo.findByIdWithSteps(sessionId);
+        List<Integer> orderIndexes = finished.getSteps().stream().map(s -> s.getOrderIndex()).sorted().toList();
+        assertEquals(List.of(0, 1, 2, 3, 4), orderIndexes, "no duplicate steps after resume: "
+                + finished.getSteps().stream().map(s -> s.getType() + "@" + s.getOrderIndex()).toList());
+        assertTrue(finished.getSteps().stream().noneMatch(s -> "FAILED".equals(s.getStatus())), "failed markers must be replaced in place");
+        assertNotNull(finished.getFinalReport());
+        assertTrue(finished.getFinalReport().contains("Final Report"), "failure report must be cleared by the claim");
+    }
+
+    /** Poll the real database until the session reaches the expected terminal status (max 90s). */
+    private void assertSettlesTo(UUID sessionId, ResearchStatus expected) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 90_000;
+        ResearchStatus status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
+        while (status == ResearchStatus.PROCESSING || status == ResearchStatus.PENDING) {
+            if (System.currentTimeMillis() > deadline) {
+                org.junit.jupiter.api.Assertions.fail("session did not settle to " + expected + "; stuck at " + status);
+            }
+            Thread.sleep(250);
+            status = sessionRepo.findById(sessionId).orElseThrow().getStatus();
+        }
+        assertEquals(expected, status, "session must settle to the expected terminal status");
     }
 
     /**
