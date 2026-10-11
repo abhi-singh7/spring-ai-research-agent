@@ -51,6 +51,13 @@ import { trigger, transition, style, animate } from '@angular/animations';
                   [class.cancelled]="researchSession()!.status === 'CANCELLED'">
               {{ getStatusLabel(researchSession()!.status) }}
             </span>
+
+            @if (researchSession()?.status === 'FAILED') {
+              <button mat-raised-button color="primary" class="resume-btn" [disabled]="resuming()" (click)="onResume()">
+                <mat-icon>play_arrow</mat-icon>
+                {{ resuming() ? 'Resuming…' : 'Resume Research' }}
+              </button>
+            }
           </div>
 
           <!-- Progress bar with gradient animation during processing -->
@@ -95,7 +102,10 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .back-link { display: inline-flex; align-items: center; gap: 6px; color: #6366f1; text-decoration: none; font-weight: 500; padding: 8px 0; margin-bottom: 16px; transition: all 0.2s ease; }
     .back-link:hover { opacity: 0.7; transform: translateX(-2px); }
 
-    /* Status header */
+    /* Resume button */
+  .resume-btn { border-radius: 8px !important; font-weight: 500; text-transform: none; letter-spacing: 0.3px; }
+
+  /* Status header */
     .status-header { margin-bottom: 24px; border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
     .status-info { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
     .status-info h2 { margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f0f23 !important; flex: 1; }
@@ -163,6 +173,7 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
   private researchService = inject(ResearchService);
 
   sessionId!: string;
+  resuming = signal(false);
 
   private errorSub = new Subscription();
   errorMessage = signal<string | null>(null);
@@ -253,6 +264,29 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
     this.researchService.cancelResearch(this.sessionId).subscribe({
       next: () => {},
       error: () => {}  // Ignore cancellation errors — session may already be cancelled
+    });
+  }
+
+  /**
+   * Resume a failed session in place: the server flips it back to PROCESSING and reconnects the
+   * SSE stream; the local session snapshot is refreshed so header/banner reflect the new state.
+   */
+  onResume(): void {
+    const id = this.sessionId;
+    this.resuming.set(true);
+    this.researchService.resumeAndConnect(id).subscribe({
+      next: () => {
+        this.resuming.set(false);
+        this.errorMessage.set(null);
+        this.researchSession.update(s => s ? { ...s, status: 'PROCESSING', finalReport: undefined } : s);
+      },
+      error: (err) => {
+        this.resuming.set(false);
+        console.error('[ActiveResearchComponent] Resume failed:', err);
+        this.errorMessage.set(err?.status === 409
+          ? 'This session can no longer be resumed.'
+          : 'Could not resume the research. Please try again.');
+      }
     });
   }
 }

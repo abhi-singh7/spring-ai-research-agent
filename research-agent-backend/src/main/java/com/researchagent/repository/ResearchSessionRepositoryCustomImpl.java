@@ -33,4 +33,17 @@ public class ResearchSessionRepositoryCustomImpl implements ResearchSessionRepos
                 .set("finalReport", finalReport);
         return (int) mongoTemplate.updateFirst(query, update, ResearchSession.class).getMatchedCount();
     }
+
+    @Override
+    public int markResumableIfTerminal(UUID id, LocalDateTime updatedAt) {
+        Query query = Query.query(
+                Criteria.where("id").is(id)
+                        .and("status").in(ResearchStatus.FAILED.name(), ResearchStatus.CANCELLED.name()));
+        Update update = new Update()
+                .set("status", ResearchStatus.PROCESSING.name())
+                .set("updatedAt", updatedAt)
+                .unset("finalReport")
+                .unset("completedAt");
+        return (int) mongoTemplate.updateFirst(query, update, ResearchSession.class).getMatchedCount();
+    }
 }

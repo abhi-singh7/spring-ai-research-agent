@@ -441,6 +441,31 @@ export class ResearchService {
     return this.http.post<ResearchModels.FollowUpExchange>(`${this.baseUrl}/${sessionId}/followup`, request);
   }
 
+  /** Clear transient streaming state (used when resuming a failed session in place). */
+  resetStreamingState(): void {
+    this._researchStepsSignal.set([]);
+    this._reportContentSignal.set('');
+    this.isStreaming.set(false);
+  }
+
+  /**
+   * Resume a FAILED/CANCELLED session. The server atomically flips it back to PROCESSING and
+   * continues the pipeline from its stored steps. On success the transient streaming state is
+   * reset and the SSE stream (re)connects so progress renders exactly like a fresh run.
+   */
+  resumeAndConnect(sessionId: string): Observable<ResearchModels.ResearchSession> {
+    return this.http.post<ResearchModels.ResearchSession>(`${this.baseUrl}/${sessionId}/resume`, null).pipe(
+      tap(() => {
+        this.resetStreamingState();
+        try {
+          this.connectSse(sessionId);
+        } catch {
+          this.startPolling(sessionId);
+        }
+      })
+    );
+  }
+
   /** Get the stored follow-up thread for a session (chronological). */
   getFollowUps(sessionId: string): Observable<ResearchModels.FollowUpExchange[]> {
     return this.http.get<ResearchModels.FollowUpExchange[]>(`${this.baseUrl}/${sessionId}/followups`);

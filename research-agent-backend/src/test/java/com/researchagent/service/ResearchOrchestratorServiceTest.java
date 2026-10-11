@@ -1,10 +1,16 @@
 package com.researchagent.service;
 
 import com.researchagent.model.dto.ResearchRequest;
+import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
+import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
+import com.researchagent.model.enums.StepType;
 import com.researchagent.repository.ResearchSessionRepository;
+import org.springframework.test.util.ReflectionTestUtils;
+import reactor.core.publisher.Flux;
+import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -33,6 +39,7 @@ class ResearchOrchestratorServiceTest {
     @Mock private ResearchStreamingService streamService;
     @Mock private Executor researchTaskExecutor;
     @Mock private ResearchCancellationRegistry cancellationRegistry;
+    @org.mockito.Spy private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
     private ResearchOrchestratorService service;
@@ -358,7 +365,182 @@ class ResearchOrchestratorServiceTest {
         verify(sessionRepo, never()).deleteAllById(anyList());
     }
 
+    // ---------- resume (FAILED / CANCELLED sessions) ----------
+
+    @Test
+    void resumeResearch_shouldThrowWhenClaimFails() {
+        UUID sessionId = UUID.randomUUID();
+        when(sessionRepo.markResumableIfTerminal(eq(sessionId), any(LocalDateTime.class))).thenReturn(0);
+
+        assertThatThrownBy(() -> service.resumeResearch(sessionId))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("not in a resumable state");
+
+        // No pipeline work may start when the atomic claim is lost.
+        verify(cancellationRegistry, never()).register(any(UUID.class));
+    }
+
+    @Test
+    void resumeResearch_shouldClaimTerminalSessionAndHandOffToAsyncPipeline() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = createMockSession(sessionId, "Topic A");
+        session.setStatus(ResearchStatus.PROCESSING);
+
+        when(sessionRepo.markResumableIfTerminal(eq(sessionId), any(LocalDateTime.class))).thenReturn(1);
+        // First call (claim read-back) returns the session; second call (async start) returns null → clean abort.
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session, null);
+        ResearchCancellationRegistry.CancellationHandle handle = mock(ResearchCancellationRegistry.CancellationHandle.class);
+        when(cancellationRegistry.register(sessionId)).thenReturn(handle);
+
+        ResearchSession result = service.resumeResearch(sessionId);
+
+        assertThat(result).isSameAs(session);
+        verify(cancellationRegistry).unregister(sessionId, handle);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void recoverPlan_shouldParseStoredBreakdownStep() {
+        ResearchSession session = new ResearchSession();
+        session.addStep(breakdownStep("""
+                {"topic":"T","subTopics":[
+                  {"id":1,"title":"Alpha","description":"d1","searchQueries":["q1"]},
+                  {"id":2,"title":"Beta","description":"","searchQueries":[]}
+                ]}"""));
+
+        List<SubTopic> plan = (List<SubTopic>) ReflectionTestUtils.invokeMethod(service, "recoverPlan", session);
+
+        assertThat(plan).hasSize(2);
+        assertThat(plan.get(0).title()).isEqualTo("Alpha");
+        assertThat(plan.get(1).title()).isEqualTo("Beta");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void recoverPlan_shouldReturnEmptyWhenBreakdownMissingOrUnparseable() {
+        ResearchSession noBreakdown = new ResearchSession();
+        noBreakdown.addStep(step(StepType.SUBTOPIC, 1, "COMPLETED", "note"));
+
+        ResearchSession badJson = new ResearchSession();
+        badJson.addStep(breakdownStep("this is not json"));
+
+        assertThat((List<SubTopic>) ReflectionTestUtils.invokeMethod(service, "recoverPlan", noBreakdown)).isEmpty();
+        assertThat((List<SubTopic>) ReflectionTestUtils.invokeMethod(service, "recoverPlan", badJson)).isEmpty();
+    }
+
+    @Test
+    void upsertSubTopicStep_shouldUpdateExistingStepInPlace() {
+        ResearchSession session = new ResearchSession();
+        ResearchStep existing = step(StepType.SUBTOPIC, 1, "FAILED", null);
+        session.addStep(existing);
+
+        ReflectionTestUtils.invokeMethod(service, "upsertSubTopicStep", session, 1, "COMPLETED", "new note");
+
+        assertThat(session.getSteps()).hasSize(1);
+        assertThat(existing.getStatus()).isEqualTo("COMPLETED");
+        assertThat(existing.getContent()).isEqualTo("new note");
+    }
+
+    @Test
+    void upsertSubTopicStep_shouldAppendWhenAbsent() {
+        ResearchSession session = new ResearchSession();
+
+        ReflectionTestUtils.invokeMethod(service, "upsertSubTopicStep", session, 2, "COMPLETED", "note");
+
+        assertThat(session.getSteps()).hasSize(1);
+        assertThat(session.getSteps().get(0).getType()).isEqualTo(StepType.SUBTOPIC);
+        assertThat(session.getSteps().get(0).getOrderIndex()).isEqualTo(2);
+    }
+
+    @Test
+    void processResumeAsync_shouldReuseCompletedSubTopicAndGenerateReport() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = createMockSession(sessionId, "Test topic");
+        session.setStatus(ResearchStatus.PROCESSING);
+        session.addStep(breakdownStep("""
+                {"topic":"Test topic","subTopics":[{"id":1,"title":"Alpha","description":"d","searchQueries":["q"]}]}"""));
+        String note = "Findings about Alpha.\n\n## Sources\n- Some Title — https://example.com/a";
+        session.addStep(step(StepType.SUBTOPIC, 1, "COMPLETED", note));
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(sessionRepo.findById(sessionId)).thenReturn(java.util.Optional.of(session));
+        ResearchCancellationRegistry.CancellationHandle handle = mock(ResearchCancellationRegistry.CancellationHandle.class);
+        when(cancellationRegistry.register(sessionId)).thenReturn(handle);
+        when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        ReflectionTestUtils.setField(service, "qualityEvalEnabled", false);
+        when(llmGateway.streamComplete(eq(sessionId), anyString(), anyString(), anyDouble()))
+            .thenReturn(Flux.just("# Final Report"));
+
+        service.processResumeAsync(sessionId);
+
+        // The reused sub-topic must not trigger any research LLM call; the report stream completes the session.
+        verify(llmGateway, never()).completeStructured(any(UUID.class), anyString(), anyString(), anyDouble(), any(Class.class));
+        assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
+        assertThat(session.getFinalReport()).isEqualTo("# Final Report");
+    }
+
+    @Test
+    void processResumeAsync_shouldRereearchFailedSubTopicInPlace() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = createMockSession(sessionId, "Test topic");
+        session.setStatus(ResearchStatus.PROCESSING);
+        session.addStep(breakdownStep("""
+                {"topic":"Test topic","subTopics":[
+                  {"id":1,"title":"Alpha","description":"d","searchQueries":["q"]},
+                  {"id":2,"title":"Beta","description":"d","searchQueries":["q"]}
+                ]}"""));
+        session.addStep(step(StepType.SUBTOPIC, 1, "COMPLETED", "Alpha note.\n\n## Sources\n- A — https://a.example/1"));
+        ResearchStep failedBeta = step(StepType.SUBTOPIC, 2, "FAILED", null);
+        session.addStep(failedBeta);
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(sessionRepo.findById(sessionId)).thenReturn(java.util.Optional.of(session));
+        ResearchCancellationRegistry.CancellationHandle handle = mock(ResearchCancellationRegistry.CancellationHandle.class);
+        when(cancellationRegistry.register(sessionId)).thenReturn(handle);
+        when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        ReflectionTestUtils.setField(service, "defaultMaxIterations", 1);
+        ReflectionTestUtils.setField(service, "qualityEvalEnabled", false);
+        // Only the failed sub-topic (Beta) needs research; Alpha is reused.
+        com.researchagent.model.dto.ResearchRoundNote betaNote = new com.researchagent.model.dto.ResearchRoundNote(
+                List.of("Beta findings."),
+                List.of(new com.researchagent.model.dto.ResearchRoundNote.SourceRef("B", "https://b.example/2")),
+                List.of());
+        when(llmGateway.completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class)))
+            .thenReturn(betaNote);
+        when(llmGateway.streamComplete(eq(sessionId), anyString(), anyString(), anyDouble()))
+            .thenReturn(Flux.just("# Final Report"));
+
+        service.processResumeAsync(sessionId);
+
+        // The failed step is updated IN PLACE at its original orderIndex — no duplicate steps.
+        assertThat(session.getSteps()).anySatisfy(s -> {
+            if (s.getType() == StepType.SUBTOPIC && s.getOrderIndex() == 2) {
+                assertThat(s.getStatus()).isEqualTo("COMPLETED");
+                assertThat(s.getContent()).contains("Beta findings");
+            }
+        });
+        long betaSteps = session.getSteps().stream()
+                .filter(s -> s.getType() == StepType.SUBTOPIC && s.getOrderIndex() == 2).count();
+        assertThat(betaSteps).isEqualTo(1);
+        // Beta was researched exactly once (single round).
+        verify(llmGateway, times(1)).completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class));
+        assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
+    }
+
     // ---------- helpers ----------
+
+    private ResearchStep step(StepType type, int orderIndex, String status, String content) {
+        ResearchStep s = new ResearchStep();
+        s.setType(type);
+        s.setOrderIndex(orderIndex);
+        s.setStatus(status);
+        s.setContent(content);
+        return s;
+    }
+
+    private ResearchStep breakdownStep(String content) {
+        return step(StepType.BREAKDOWN, 0, "COMPLETED", content);
+    }
 
     private ResearchSession createMockSession(UUID id, String topic) {
         ResearchSession session = new ResearchSession();
