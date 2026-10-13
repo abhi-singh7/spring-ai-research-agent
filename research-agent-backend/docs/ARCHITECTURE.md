@@ -56,11 +56,25 @@ Handles all REST endpoints for the research lifecycle:
 | `/api/research/history/bulk-delete` | POST | Bulk delete multiple sessions (all-or-nothing rollback) |
 | `/api/research/history/{sessionId}` | DELETE | Delete single historical session (not PROCESSING only) |
 | `/api/research/{sessionId}/report` | GET | Get final report text (falls back to generating from steps if missing) |
-| `/api/research/{sessionId}/followup` | POST | Submit follow-up question about completed research |
+| `/api/research/{sessionId}/followup` | POST | Submit follow-up question about completed research (201 + `FollowUpExchangeDTO`; exchange persisted on the session) |
+| `/api/research/{sessionId}/followups` | GET | Get the stored follow-up thread (chronological `List<FollowUpExchangeDTO>`) |
+| `/api/research/{sessionId}/resume` | POST | Resume a FAILED/CANCELLED session in place (atomic claim; 409 on lost race) |
+
+#### `AuthController` (`/api/auth/*`)
+
+JWT authentication: `POST /register` (201 + auto-login token), `POST /login`, `GET /me`. Backed by `UserService` (BCrypt-hashed users in the `user` collection) and `JwtService` (HS256 via nimbus-jose-jwt).
+
+#### `HealthController` (`/api/health`)
+
+Unauthenticated liveness probe used by deploy gates.
 
 #### `ResearchStreamController` (`/api/research/stream/{sessionId}`)
 
-Placeholder SSE endpoint. Note: This controller creates a standalone `SseEmitter` that is **not wired** into the `ResearchStreamingService`. The actual SSE connections are managed by `ResearchStreamingService.registerStream()`, making this endpoint non-functional as written. The frontend uses `/api/research/stream/{sessionId}` but the backend's `ResearchOrchestratorService.processResearchAsync()` sends events directly through `ResearchStreamingService.sendReportChunk()` etc.
+SSE endpoint. The path is permitted through the security filter chain (EventSource cannot send headers), so the controller validates the JWT **via a `?token=` query parameter** and answers 401 JSON before opening the stream. Connections are managed by `ResearchStreamingService.registerStream()`; events are sent by `ResearchOrchestratorService` through `sendReportChunk()` etc.
+
+#### `SpaForwardController`
+
+Forwards deep links/refreshes of extension-less SPA routes (e.g., `/login`, `/research/*`) to `index.html` so the Angular router can handle them. Never matches assets or `/api/**`. The SPA shell itself is public — only `/api/**` requires a Bearer JWT (`SecurityConfig`).
 
 ### 2. Services — Business Logic
 
@@ -75,13 +89,17 @@ Phase 1 — Topic Breakdown (non-streaming)
     │ .call()  │      │ parse│
     └──────────┘      └─────┘
 
-Phase 2 — Sub-topic Research (loop, non-streaming)
+Phase 2 — Sub-topic Research (loop, iterative rounds)
     FOR each sub-topic:
-        ┌──────────┐     ┌──────────┐
-        │ LLM call │────▶│ MCP tool│
-        │ .call()  │     │ calling  │
-        │          │     │(search+read)│
-        └──────────┘     └──────────┘
+        FOR round 1..N (default 3):
+            ┌──────────┐     ┌──────────┐
+            │ LLM call │────▶│ MCP tool│
+            │ .call()  │     │ calling  │
+            │          │     │(search+read)│
+            └──────────┘     └──────────┘
+
+Phase 2.5 — Quality Gate (structured LLM call)
+    Score findings; supplementary research if below min-score
 
 Phase 3 — Final Report Synthesis (streaming)
     ┌──────────┐      ┌──────────┐
@@ -91,14 +109,19 @@ Phase 3 — Final Report Synthesis (streaming)
 ```
 
 **Key orchestration logic:**
-- Parses JSON response from Phase 1 breakdown using Jackson `ObjectMapper`, with fallback creating a single generic SubTopic if parsing fails
-- In Phase 2, limits iteration to `Math.min(subTopics.size(), maxIterations)` — whichever is smaller
+- Phase 1 obtains the breakdown plan via structured output (`LlmGateway.completeStructured(...)` → `ChatClient.call().entity(List<SubTopic>)`), with fallback creating a single generic SubTopic if parsing fails
+- In Phase 2, each sub-topic runs up to N LLM rounds (request `maxIterations`, else `app.research.default-max-iterations`: 3): round 1 sweeps the planned search queries, later rounds chase Open Questions. Early stop on coverage (≥3 captured source URLs AND ≥400 chars findings) or when a round adds no new URLs (round ≥2). Round notes are structured `ResearchRoundNote` objects (attempts 2–3 fall back to free-form text parsing)
 - Uses search backend routing (`McpToolRouter`) for search tasks: routes every task type through the `firecrawl → ddg → ollama_web_search → tavily` chain, executed in ONE WebSearchTool call
+- References are built ONLY from "Title — URL" lines parsed out of research notes (deduped by normalized URL); the synthesis prompt forbids citing uncaptured URLs
 - Builds findings as markdown-formatted strings: `"## Sub-Topic: {title}\n\n{finding}"` for each sub-topic
+- A structured **quality gate** (`app.research.quality-eval`) scores the collected findings before synthesis; below `min-score` triggers supplementary research
+- Per-sub-topic failures become FAILED steps and processing continues; only total failure fails the session
 - Phase 3 uses `.stream().content()` returning `Flux<String>` directly to stream chunks via SSE
 - Accumulates report content in an `AtomicReference<StringBuilder>` during streaming, then saves the full text after completion
 
-**Error handling:** Any exception mid-flow sets session status to FAILED, saves error as a BREAKDOWN step, and sends ERROR event via SSE.
+**Resume (FAILED/CANCELLED sessions):** `POST /{sessionId}/resume` atomically claims a terminal session via `markResumableIfTerminal` (→ PROCESSING, clears the failure report; 409 on lost race). The pipeline recovers the plan from the stored BREAKDOWN step JSON, reuses COMPLETED sub-topic steps verbatim, re-researches FAILED/missing ones in place at the same `orderIndex`, then re-runs the shared quality-gate + streamed-report tail (`runPostResearchStages`).
+
+**Error handling:** Any exception mid-flow sets session status to FAILED, saves error as a BREAKDOWN step, and sends ERROR event via SSE. Runs on an async pool thread outside any transaction; steps are embedded in the session document, so every `save()` atomically replaces the whole document — always adopt the instance returned by `repo.save()`.
 
 #### `ResearchStreamingService` — SSE Connection Management
 
@@ -108,15 +131,25 @@ Thread-safe SSE emitter registry:
 - Completion/error/timeout callbacks automatically clean up the map entry
 - Private `sendEvent(UUID, EventType, Object)` method serializes StreamUpdate DTOs and sends them as named SSE events
 
-#### `FollowUpService` — Follow-up Question Handler
+**Follow-up handling** (in the orchestrator, not a separate service): `submitFollowUp(sessionId, question)` builds full context (topic + report + prior Q&A transcript), answers via `LlmGateway.complete(...)`, persists the exchange on the session document (`followUps` array) on success only, and returns it as `FollowUpExchangeDTO`. The stored thread is also exposed via `GET /{sessionId}/followups` and in `ResearchSessionDetailDTO.followUps`.
 
-Retrieves a completed session's final report (truncated to 2000 chars for prompt context), constructs a system prompt with topic + truncated report + follow-up question, calls the LLM `.call()` method and returns the generated answer as plain text.
+#### `LlmGateway` / `SpringAiLlmGateway` — LLM Seam
+
+Single seam for all model calls: `complete()` / `streamComplete()` (per-request temperature) and `completeStructured(...)` (`call().entity(...)` via `BeanOutputConverter`) for the breakdown plan and round notes. Every method takes the session id first so each call is attributable in `llm_logs`.
+
+#### `LoggingAdvisor` — LLM Call Logging
+
+A `CallAdvisor` + `StreamAdvisor` that persists every LLM request/response pair to the `llm_logs` Mongo collection (one document per model round: prompt, response, model, streaming flag, status, duration). Placed at order 0 INSIDE ToolCallingAdvisor so each tool-calling round gets its own document; registered explicitly via `.defaultAdvisors(...)` in `ChatClientConfig` (auto-config does not pick up Advisor beans). Per-session attribution flows through the advisor context, not ThreadLocal. Persist failures are swallowed — logging never breaks the pipeline.
+
+#### `WebContentCacheService` — URL → Content Cache
+
+Mongo cache (`web_page_cache`) mapping normalized URL → scraped text with a ~1-week TTL on `fetchedAt`. `UrlReaderTool` checks it before Jsoup/Firecrawl and stores non-empty results; `WebSearchTool.formatHits` inlines cached content under matching search hits (capped). All cache failures are swallowed — the cache must never break research. Config: `app.cache.enabled`, `app.cache.ttl`.
 
 #### `AbandonedSessionCleanupService` — Stale Session Cleanup
 
-Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold (default: 15 minutes) as CANCELLED. Runs at a fixed interval (default: every 20 minutes). Configured via `application.yml`:
-- `app.cleanup.stale-after: PT15M` — duration after which a session is considered stale
-- `app.cleanup.interval: PT2M` — scheduler run interval
+Background scheduler that periodically marks PROCESSING sessions stuck longer than the configured threshold as CANCELLED. Configured via `application.yml`:
+- `app.cleanup.stale-after: PT45M` — duration after which a session is considered stale
+- `app.cleanup.interval: PT20M` — scheduler run interval
 
 Uses `@Scheduled(fixedRateString = "${app.cleanup.interval}")` and queries `ResearchSessionRepository.findAllByStatusAndCreatedAtBefore()`.
 
@@ -148,6 +181,7 @@ The `McpToolRouter.getPreferredServer()` returns the first server in the chain (
 #### `ResearchSessionRepositoryCustom` (+ `...CustomImpl`)
 - Repository fragment using `MongoTemplate` for operations derived queries can't express:
 - `markCancelledIfProcessing(UUID, LocalDateTime, String)` — conditional `updateFirst()` that transitions a session to CANCELLED only if it is still PROCESSING (the no-clobber rule holds at the database level)
+- `markResumableIfTerminal(UUID, LocalDateTime)` — conditional `updateFirst()` that flips a FAILED/CANCELLED session back to PROCESSING (clearing the failure report) for the resume flow; 0 matched = lost the claim race
 
 ### 5. Configuration Classes
 
@@ -160,13 +194,31 @@ Creates a basic ChatClient bean via Spring AI's auto-configured beans. No manual
 #### `WebConfig`
 CORS configuration allowing origins `http://localhost:4200`, `http://127.0.0.1:4200` (Angular dev server). Allows GET, POST, PUT, DELETE, OPTIONS methods with all headers.
 
+#### `SecurityConfig` + `JwtAuthFilter` / `JwtService` (security package)
+Stateless JWT security chain:
+- Only `/api/**` requires a valid Bearer JWT; `/api/auth/**`, `/api/health` and `/api/research/stream/**` are permitted through the chain (the stream endpoint self-validates its `?token=` query parameter). The SPA shell + static assets are public — protecting them would 401-wall the entire UI including `/login`
+- `JwtAuthFilter` is instantiated inline in the chain (NOT a `@Bean`) — any `Filter` bean is auto-registered as a servlet filter, which would run it outside the chain and get wiped by `SecurityContextHolderFilter`
+- `JwtService`: HS256 issue/validate via nimbus-jose-jwt; refuses to start with a secret shorter than 32 bytes (`app.security.jwt.secret`, override with `JWT_SECRET` in production)
+
+#### `WebPageCacheIndexInitializer`
+Ensures the `web_page_cache` unique/TTL indexes at startup via `MongoOperations.indexOps(...).ensureIndex(...)` — necessary because Spring Data MongoDB 5.x (Boot 4) defaults `auto-index-creation` to **false**, so `@Indexed`/`@CompoundIndex` annotations are NOT auto-created in this project.
+
 ### 6. Domain Models — Mongo Documents
 
 #### `ResearchSession`
 Top-level document (`@Document(collection = "research_session")`) representing a research task:
-- Embeds its steps as an array — every `save()` atomically replaces the whole document (no lazy loading, no cascade configuration)
-- Indexes auto-created from annotations: compound `{ status: 1, createdAt: -1 }` (`@CompoundIndex`) and single-field `createdAt` (`@Indexed`)
+- Embeds its steps as an array AND its answered follow-up exchanges (`followUps`, `List<FollowUpExchange>`) — every `save()` atomically replaces the whole document (no lazy loading, no cascade configuration)
+- Index annotations (`@CompoundIndex` on `{ status: 1, createdAt: -1 }`, `@Indexed` on `createdAt`) are present but NOT auto-created (Spring Data MongoDB 5.x defaults `auto-index-creation` to false) — collections run index-less unless created explicitly
 - Convenience methods: `addStep()`, `complete()`, `fail(errorMessage)` — encapsulate state transitions (terminal states are never overwritten)
+
+#### `User`
+Authentication user (`user` collection): username (unique), BCrypt password hash, role (`USER`), createdAt.
+
+#### `LLMLogs`
+One document per LLM model round (`llm_logs` collection): prompt, response, model, streaming flag, status, duration — indexed by `sessionId` for per-session history.
+
+#### `WebPageCacheEntry`
+URL → scraped-text cache entry (`web_page_cache` collection): normalized URL (unique key), content, `fetchedAt` (TTL-indexed).
 
 #### `ResearchStep`
 Embedded sub-document representing an individual step in the research pipeline:

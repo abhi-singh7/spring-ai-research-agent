@@ -4,6 +4,8 @@
 
 The Angular frontend communicates with the backend via REST and SSE. All requests are proxied through `proxy.conf.json` in development, which maps `/api/*` to `http://localhost:8080`. In production, this proxy must be replaced with a real CORS setup or reverse proxy.
 
+**Authentication:** all API calls require a JWT. `AuthService` owns the token (localStorage key `ra-auth-token`) and the app-wide auth state (`checking → authenticated | anonymous`); `AuthInterceptor` attaches `Authorization: Bearer <token>` to every HTTP request, and 401 responses redirect to `/login`. The SSE connection can't set headers, so `connectSse()` appends the token as a `?token=` query parameter (read at connect time, so a fresh login mid-session is picked up). All routes except `login` are guarded by `authGuard`.
+
 ---
 
 ## API Client — ResearchService & ResearchHistoryService
@@ -21,7 +23,9 @@ startResearch(request: ResearchStartRequest): Observable<ResearchSession>
 getStatus(sessionId: string): Observable<ResearchSession>
 cancelResearch(sessionId: string): Observable<void>
 getHistoricalSession(sessionId: string): Observable<ResearchSession>
-submitFollowUp(sessionId: string, question: string): Observable<string>
+submitFollowUp(sessionId: string, question: string): Observable<FollowUpExchange>   // 201 + persisted exchange
+getFollowUps(sessionId: string): Observable<FollowUpExchange[]>                   // stored thread
+resumeAndConnect(sessionId: string): Observable<ResearchSession>                  // POST /{id}/resume, then reconnect SSE
 ```
 
 #### SSE Connection (EventSource)
@@ -79,9 +83,12 @@ See [backend docs/API.md](../../research-agent-backend/docs/API.md) for complete
 | `/api/research/history/{sessionId}` | GET | Get historical session detail with steps | HistoryDetailComponent |
 | `/api/research/history/{sessionId}` | DELETE | Delete single historical session | Single delete (MatDialog confirm) |
 | `/api/research/history/bulk-delete` | POST | Bulk delete selected sessions | Multi-select delete toolbar |
-| `/api/research/stream/{sessionId}` | GET | Subscribe to SSE events | Primary streaming method with reconnection |
+| `/api/auth/login`, `/api/auth/register`, `/api/auth/me` | POST/POST/GET | Authentication (token stored in localStorage) | AuthService / LoginComponent |
+| `/api/research/stream/{sessionId}?token=` | GET | Subscribe to SSE events (JWT via query param — EventSource can't set headers) | Primary streaming method with reconnection |
 | `/api/research/{sessionId}/report` | GET | Get final report text | Fallback if REPORT_DONE not received |
-| `/api/research/{sessionId}/followup` | POST | Submit follow-up question | FollowUpFormComponent |
+| `/api/research/{sessionId}/followup` | POST | Submit follow-up question (201 + persisted exchange) | FollowUpThreadComponent |
+| `/api/research/{sessionId}/followups` | GET | Load the stored follow-up thread | FollowUpThreadComponent |
+| `/api/research/{sessionId}/resume` | POST | Resume a FAILED/CANCELLED session in place | ActiveResearch / HistoryDetail (409 handling) |
 
 ---
 

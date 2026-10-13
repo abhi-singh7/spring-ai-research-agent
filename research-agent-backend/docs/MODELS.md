@@ -2,7 +2,7 @@
 
 ## Domain Documents (MongoDB)
 
-All data lives in a single collection, `research_session`. Each session document **embeds its steps** as an array — there is no separate step collection. Collections and indexes are auto-created by Spring Data MongoDB from entity annotations; UUIDs use the STANDARD (RFC 4122) BSON representation (`spring.mongodb.representation.uuid: STANDARD`).
+All research data lives in a single collection, `research_session`. Each session document **embeds its steps** as an array — there is no separate step collection. Collections are created automatically; indexes are **not** auto-created (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false) — see [DATABASE.md](./DATABASE.md). UUIDs use the STANDARD (RFC 4122) BSON representation (`spring.mongodb.representation.uuid: STANDARD`).
 
 ### `research_session` Document
 
@@ -14,13 +14,16 @@ All data lives in a single collection, `research_session`. Each session document
 | `prompt` | string (nullable) | System prompt used for this session |
 | `steps` | array of embedded documents | Full step list (see below), ordered by `orderIndex` |
 | `finalReport` | string (nullable) | Synthesized research report content |
+| `followUps` | array of embedded documents | Answered follow-up Q&A pairs (`FollowUpExchange`: id, question, answer, createdAt), chronological |
 | `createdAt` | date | Session creation timestamp |
 | `updatedAt` | date (nullable) | Last update timestamp |
 | `completedAt` | date (nullable) | Completion/failure/cancellation timestamp |
 
-**Indexes (auto-created from annotations):**
+**Index annotations (NOT auto-created — Spring Data MongoDB 5.x defaults `auto-index-creation` to false):**
 - Compound index `status_createdAt` on `{ status: 1, createdAt: -1 }` (`@CompoundIndex`) — covers status filtering and history ordering in one query
 - Single-field index on `createdAt` (`@Indexed`)
+
+The collection runs index-less unless the indexes are created explicitly (e.g., via `MongoOperations.indexOps(...).ensureIndex(...)` as `WebPageCacheIndexInitializer` does for `web_page_cache`).
 
 ### Embedded `steps[]` Sub-Document
 
@@ -99,11 +102,12 @@ public class ResearchSessionDetailDTO {
     String topic;                                // Original research topic
     String status;                               // Current session status
     String prompt;                               // System prompt used for this session
+    List<StepDTO> steps;                         // Full step list with content included
+    List<FollowUpExchangeDTO> followUps;         // Persisted follow-up thread (chronological)
     String finalReport;                          // Synthesized report content (nullable)
     LocalDateTime createdAt;                     // Creation timestamp
     LocalDateTime updatedAt;                     // Last update timestamp
     LocalDateTime completedAt;                   // Completion/failure timestamp (nullable)
-    List<StepDTO> steps;                         // Full step list with content included
 }
 ```
 
@@ -158,6 +162,26 @@ public class FollowUpRequest {
     @NotBlank String question;                   // The follow-up question to answer
 }
 ```
+
+### FollowUpExchangeDTO — Persisted Follow-Up Exchange
+
+Returned by `POST /api/research/{sessionId}/followup` (201), listed by `GET /api/research/{sessionId}/followups`, and embedded in `ResearchSessionDetailDTO.followUps`.
+
+```java
+public class FollowUpExchangeDTO {
+    UUID id;                                     // Exchange identifier
+    String question;                             // The follow-up question
+    String answer;                               // LLM-generated answer
+    LocalDateTime createdAt;                     // When the exchange was stored
+}
+```
+
+The matching embedded entity is `FollowUpExchange` (same fields), stored on the session document in a `followUps` array — persisted on successful answer only.
+
+### QualityEvalResult / ResearchRoundNote — Internal Structured Models
+
+- `ResearchRoundNote` — structured per-round research notes (findings, open questions, captured source URLs) obtained via `LlmGateway.completeStructured(...)`; rendered back to the classic markdown shape for step content/synthesis input
+- `QualityEvalResult` — structured quality-gate score (0–10) over collected findings before final report generation
 
 ---
 

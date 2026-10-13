@@ -7,11 +7,11 @@
 - **Java 21** (OpenJDK)
 - **Node.js 20+** with npm
 - **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent`)
-- **Ollama** running locally with a model available (e.g., `gemma-4-26b`) at `http://localhost:1234`
+- A local OpenAI-compatible LLM server (see `OLLAMA_BASE_URL` in the backend config, default `http://127.0.0.1:8888/v1`) with a model matching `spring.ai.openai.chat.options.model`
 
 ### Database Setup
 
-The backend uses MongoDB — there is no schema to create or migrate. The `research-agent` database and the `research_session` collection are created automatically on first write, and indexes are auto-created from entity annotations.
+The backend uses MongoDB — there is no schema to create or migrate. The `research-agent` database and the `research_session` collection are created automatically on first write. Note: indexes are **not** auto-created (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false) — collections run index-less unless created explicitly (e.g., `WebPageCacheIndexInitializer` ensures the `web_page_cache` unique/TTL indexes at startup).
 
 If you have legacy data in the old PostgreSQL database, run the one-shot migration script (idempotent, read-only against PostgreSQL):
 
@@ -48,16 +48,18 @@ All configuration is in `src/main/resources/application.yml`. Key settings:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `spring.ai.openai.base-url` | `http://localhost:1234` | Ollama endpoint (no `/v1` suffix) |
-| `spring.ai.openai.chat.options.model` | `google/gemma-4-26b-a4b-qat` | LLM model name |
+| `spring.ai.openai.base-url` | `http://127.0.0.1:8888/v1` | OpenAI-compatible local LLM endpoint |
+| `spring.ai.openai.chat.options.model` | (see `application.yml`) | LLM model name — must match a locally available model tag |
 | `spring.mongodb.uri` | `mongodb://localhost:27017/research-agent` | MongoDB connection (database created automatically) |
 | `spring.mongodb.representation.uuid` | `STANDARD` | UUIDs stored as standard (RFC 4122) BSON — must match the migration script |
 | `spring.ai.sse.timeout` | `600000` ms | SSE emitter timeout (10 min) |
+| `app.security.jwt.secret` | dev-only default | HS256 JWT signing secret — override with `JWT_SECRET` in production (min 32 bytes) |
 
 Environment variables that override defaults:
-- `OLLAMA_BASE_URL` — Ollama endpoint URL
+- `OLLAMA_BASE_URL` — LLM endpoint URL
 - `LLM_MODEL` — model name to use
-- `OPENAI_API_KEY` — API key (any value works for local Ollama)
+- `OPENAI_API_KEY` — API key (any value works for a local server)
+- `JWT_SECRET` — production JWT signing secret
 
 ### Frontend Setup
 
@@ -96,40 +98,58 @@ npm start    # → http://localhost:4200
 
 ### Testing Endpoints Manually
 
+All `/api/research/**` endpoints require a JWT. Get one first (register auto-logs in and returns a token):
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "password": "demo-password-123"}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
+```
+
+Then send `Authorization: Bearer $TOKEN` with each call:
+
 ```bash
 # Start a new research session
 curl -X POST http://localhost:8080/api/research \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"topic": "Test topic", "maxIterations": 2, "subTopicCount": 3}'
 
 # Get session status (replace SESSION_ID)
-curl http://localhost:8080/api/research/SESSION_ID
+curl http://localhost:8080/api/research/SESSION_ID -H "Authorization: Bearer $TOKEN"
 
 # Check history
-curl http://localhost:8080/api/research/history
+curl http://localhost:8080/api/research/history -H "Authorization: Bearer $TOKEN"
 
 # Search history by topic
-curl "http://localhost:8080/api/research/history/search?query=AI"
+curl "http://localhost:8080/api/research/history/search?query=AI" -H "Authorization: Bearer $TOKEN"
 
 # Cancel a running session
-curl -X DELETE http://localhost:8080/api/research/SESSION_ID
+curl -X DELETE http://localhost:8080/api/research/SESSION_ID -H "Authorization: Bearer $TOKEN"
+
+# Resume a FAILED/CANCELLED session (409 if COMPLETED/PROCESSING)
+curl -X POST http://localhost:8080/api/research/SESSION_ID/resume -H "Authorization: Bearer $TOKEN"
 
 # Delete historical session
-curl -X DELETE http://localhost:8080/api/research/history/SESSION_ID
+curl -X DELETE http://localhost:8080/api/research/history/SESSION_ID -H "Authorization: Bearer $TOKEN"
 
 # Bulk delete (all-or-nothing rollback)
 curl -X POST http://localhost:8080/api/research/history/bulk-delete \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '["uuid-1", "uuid-2"]'
 
 # Get final report for completed session
-curl http://localhost:8080/api/research/SESSION_ID/report
+curl http://localhost:8080/api/research/SESSION_ID/report -H "Authorization: Bearer $TOKEN"
 
-# Submit follow-up question
+# Submit follow-up question (201 + persisted FollowUpExchangeDTO)
 curl -X POST http://localhost:8080/api/research/SESSION_ID/followup \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"question": "What are the key findings?"}'
+
+# Get the stored follow-up thread
+curl http://localhost:8080/api/research/SESSION_ID/followups -H "Authorization: Bearer $TOKEN"
 ```
+
+(`GET /api/health` and `POST /api/auth/login|register` stay unauthenticated; the SSE endpoint takes the token as `?token=` since EventSource can't set headers.)
 
 ---
 

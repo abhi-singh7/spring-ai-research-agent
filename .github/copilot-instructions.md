@@ -79,14 +79,15 @@ ResearchController → ResearchOrchestratorService → ResearchStreamingService 
 ```
 ActiveResearchComponent ← ResearchService (SSE via EventSource + polling fallback)
          ↓                    (signal state: researchSession, researchSteps, reportContent, isStreaming)
-StepListComponent       ReportViewerComponent  FollowupFormComponent
+StepListComponent       ReportViewerComponent  FollowUpThreadComponent
 ```
 
 **Key Frontend Files:**
 - `src/app/core/services/research.service.ts` — Primary service: REST calls + SSE via EventSource API. Manages signal state (researchSession, researchSteps, reportContent, isStreaming). Includes polling fallback when SSE disconnects
-- `src/app/features/active-research/` — Live streaming session view with step list, report viewer, cancel/follow-up forms
+- `src/app/features/active-research/` — Live streaming session view with step list, report viewer, cancel button
 - `src/app/shared/components/step-list/` — Step progress display with status icons and animations
-- `src/app/shared/components/report-viewer/` — Report content renderer (raw text fallback)
+- `src/app/shared/components/report-viewer/` — Report content renderer (marked → sanitized HTML)
+- `src/app/shared/components/followup-thread/` — Threaded follow-up Q&A for completed sessions
 
 ### Routing (`research-agent-ui/src/app/app.routes.ts`)
 ```typescript
@@ -95,7 +96,10 @@ StepListComponent       ReportViewerComponent  FollowupFormComponent
 { path: 'research/:sessionId', loadComponent: () => import('./features/active-research/active-research.component') }
 { path: 'research/history', loadComponent: () => import('./features/research-history/research-history.component') }
 { path: 'research/history/:sessionId', loadComponent: () => import('./features/history-detail/history-detail.component') }
+{ path: 'research/history/:sessionId/report', loadComponent: () => import('./features/report-document/report-document.component') }
+{ path: 'login', loadComponent: () => import('./features/login/login.component') }   // only unguarded route
 ```
+All routes except `login` are gated by `authGuard`; the JWT is attached by `AuthInterceptor` (SSE passes it as `?token=`).
 
 ## Key Conventions
 
@@ -118,7 +122,7 @@ StepListComponent       ReportViewerComponent  FollowupFormComponent
 ### Configuration Conventions
 
 - All environment variables use `${VAR_NAME:default_value}` syntax in `application.yml`. The MongoDB URI is fixed at `mongodb://localhost:27017/research-agent` in `application.yml` (no env override).
-- LLM endpoint defaults to Ollama at `http://localhost:1234` (no `/v1` suffix). Override with `OLLAMA_BASE_URL` env var.
+- LLM endpoint defaults to the local OpenAI-compatible server at `http://127.0.0.1:8888/v1`. Override with `OLLAMA_BASE_URL` env var.
 
 ### Important Angular Build Gotchas
 

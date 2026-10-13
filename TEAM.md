@@ -75,7 +75,7 @@ firecrawl → ddg → ollama_web_search → tavily
 - **Java 21** (OpenJDK)
 - **Node.js 20+** with npm
 - **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent` — the database is created automatically)
-- **Ollama** running locally with a model available (e.g. `gemma-4-26b`) at `http://localhost:1234`
+- A local OpenAI-compatible LLM server (see `OLLAMA_BASE_URL` in the backend config, default `http://127.0.0.1:8888/v1`) with a model matching `spring.ai.openai.chat.options.model`
 - **Firecrawl** self-hosted API at `http://localhost:3002` (optional but recommended for search)
 
 ### Backend
@@ -91,8 +91,8 @@ All configuration lives in `src/main/resources/application.yml`. The most import
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `spring.ai.openai.base-url` | `http://localhost:1234` | Ollama endpoint (no `/v1` suffix) |
-| `spring.ai.openai.chat.options.model` | `google/gemma-4-26b-a4b-qat` | LLM model name |
+| `spring.ai.openai.base-url` | `http://127.0.0.1:8888/v1` | OpenAI-compatible local LLM endpoint |
+| `spring.ai.openai.chat.options.model` | (see `application.yml`) | LLM model name — must match a locally available model tag |
 | `spring.mongodb.uri` | `mongodb://localhost:27017/research-agent` | MongoDB connection (database created automatically) |
 | `spring.mongodb.representation.uuid` | `STANDARD` | UUIDs stored as standard (RFC 4122) BSON — must match the migration script |
 | `spring.ai.sse.timeout` | `600000` ms | SSE emitter timeout (10 min) |
@@ -109,11 +109,20 @@ The frontend runs at `http://localhost:4200` and automatically forwards `/api/*`
 
 ### Verify end-to-end
 
+All `/api/research/**` endpoints require a JWT. Register (or log in) first, then call with the token:
+
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "password": "demo-password-123"}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
+
 curl -X POST http://localhost:8080/api/research \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"topic": "Test topic", "maxIterations": 2, "subTopicCount": 3}'
 ```
+
+(`GET /api/health` stays unauthenticated — it's the liveness probe for deploy gates.)
 
 ---
 
@@ -123,13 +132,15 @@ curl -X POST http://localhost:8080/api/research \
 
 | Package | What's in it |
 |---------|--------------|
-| `config/` | `ChatClientConfig` (OpenAI-compatible client), `AsyncConfig`, `WebConfig` (CORS) |
-| `controller/` | `ResearchController` (REST lifecycle + history + bulk delete), `ResearchStreamController` (SSE endpoint) |
-| `model/dto/` | Request/response contracts (`ResearchRequest`, `ResearchResponse`, `StepDTO`, `FollowUpRequest`, `ReportDTO`, `StreamUpdate`, `ResearchSessionDetailDTO`) |
-| `model/entity/` | Mongo documents (`ResearchSession` with embedded steps, `ResearchStep`) |
+| `config/` | `ChatClientConfig` (OpenAI-compatible client), `AsyncConfig`, `WebConfig` (CORS), `WebPageCacheIndexInitializer` |
+| `security/` | `SecurityConfig` (stateless JWT chain — only `/api/**` protected), `JwtAuthFilter`, `JwtService` (HS256) |
+| `advisor/` | `LoggingAdvisor` — logs every LLM request/response pair to the `llm_logs` collection |
+| `controller/` | `ResearchController` (REST lifecycle + history + bulk delete + resume + follow-ups), `AuthController` (register/login/me), `HealthController`, `ResearchStreamController` (SSE endpoint), `SpaForwardController` (SPA deep links → index.html) |
+| `model/dto/` | Request/response contracts (`ResearchRequest`, `ResearchResponse`, `StepDTO`, `FollowUpRequest`, `FollowUpExchangeDTO`, `ReportDTO`, `StreamUpdate`, `ResearchSessionDetailDTO`, `QualityEvalResult`, `ResearchRoundNote`) |
+| `model/entity/` | Mongo documents (`ResearchSession` with embedded steps + follow-ups, `ResearchStep`, `User`, `LLMLogs`, `WebPageCacheEntry`, `FollowUpExchange`) |
 | `model/enums/` | `ResearchStatus` (PENDING/PROCESSING/COMPLETED/FAILED/CANCELLED), `StepType` |
-| `repository/` | Spring Data MongoDB repository + custom fragment (`MongoTemplate`) |
-| `service/` | `ResearchOrchestratorService` (core pipeline), `ResearchStreamingService` (SSE), `FollowUpService`, `LlmGateway` / `SpringAiLlmGateway` (LLM seam), `ResearchCancellationRegistry`, `AbandonedSessionCleanupService` |
+| `repository/` | Spring Data MongoDB repository + custom fragment (`MongoTemplate`: conditional cancel/resume claims) |
+| `service/` | `ResearchOrchestratorService` (core pipeline incl. follow-ups + resume), `ResearchStreamingService` (SSE), `LlmGateway` / `SpringAiLlmGateway` (LLM seam), `WebContentCacheService` (URL→content cache), `UserService`, `ResearchCancellationRegistry`, `AbandonedSessionCleanupService` |
 | `tool/` | `WebSearchTool`, `UrlReaderTool`, `McpToolRouter` (search routing + fallbacks) |
 | `src/main/resources/db/migration/` | `V1__init_research_tables.sql` — legacy PostgreSQL schema, retained untouched as a rollback path (no longer used by the app) |
 
@@ -137,14 +148,17 @@ curl -X POST http://localhost:8080/api/research \
 
 | Area | What's in it |
 |------|--------------|
-| `core/services/` | `research.service.ts` (REST + SSE with reconnection/polling fallback + signal state), `research-history.service.ts` (paginated history + deletion) |
+| `core/services/` | `research.service.ts` (REST + SSE with reconnection/polling fallback + signal state), `research-history.service.ts` (paginated history + deletion), `auth.service.ts` (JWT token + auth state) |
 | `core/models/` | `research.model.ts` — TypeScript interfaces mirroring the backend |
-| `core/interceptors/` | `debug.interceptor.ts` |
+| `core/interceptors/` | `auth.interceptor.ts` (attaches Bearer token, 401 → /login), `debug.interceptor.ts` |
+| `core/guards/` | `auth.guard.ts` — gates all routes except `login` |
+| `features/login/` | Login/register entry point (only unguarded route) |
 | `features/research-input/` | New research form + quick-start chips |
-| `features/active-research/` | Live streaming session view (step list + report viewer + follow-up) |
+| `features/active-research/` | Live streaming session view (step list + report viewer) |
 | `features/research-history/` | Paginated history with search + single/bulk delete |
-| `features/history-detail/` | Historical session detail + follow-up |
-| `shared/components/` | `step-list`, `report-viewer`, `followup-form` (all standalone) |
+| `features/history-detail/` | Historical session detail + follow-up thread + resume |
+| `features/report-document/` | Full-page report document view |
+| `shared/components/` | `step-list`, `report-viewer`, `followup-thread` (all standalone) |
 | `app.routes.ts` | Lazy-loaded route definitions |
 
 ---
@@ -167,7 +181,7 @@ curl -X POST http://localhost:8080/api/research \
 - **Build gotcha** — only add `tsConfig` to the **build** builder in `angular.json`, NOT the serve builder.
 
 ### Database
-- MongoDB — collections and indexes are created automatically from entity annotations; there are no schema migrations.
+- MongoDB — collections are created automatically; **indexes are NOT auto-created** (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false); there are no schema migrations.
 - UUIDs use the STANDARD (RFC 4122) BSON representation (`spring.mongodb.representation.uuid: STANDARD`) — keep it in sync with `scripts/migrate_pg_to_mongo.py`.
 
 ---

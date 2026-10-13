@@ -38,17 +38,19 @@ The primary configuration file for all backend settings. Located at `src/main/re
 spring:
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:sk-lm-i3QQE3mA:UBjIG0O2s6HZOLVFLxvI}
-      base-url: ${OLLAMA_BASE_URL:http://localhost:1234}
+      api-key: ${OPENAI_API_KEY:<key>}
+      base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:8888/v1}
+      timeout: 600s   # call/read/write; keep in sync with spring.ai.sse.timeout
       chat:
         options:
-          model: ${LLM_MODEL:google/gemma-4-26b-a4b-qat}
+          model: ${LLM_MODEL:<model-tag>}
           temperature: 0.7
 ```
 
-- **api-key**: API key for the OpenAI-compatible LLM endpoint. For local Ollama, any string works since Ollama doesn't require authentication.
-- **base-url**: Base URL for the OpenAI-compatible REST API. Defaults to `http://localhost:1234` (Ollama's default). Change if running a different LLM backend. Note: no `/v1` suffix in the default — matches Ollama's actual endpoint structure.
-- **model**: The model name for all LLM calls. Default is `google/gemma-4-26b-a4b-qat`. Commented alternative: `qwopus3.6-35b-a3b-v1`. Should match the locally available Ollama model tag.
+- **api-key**: API key for the OpenAI-compatible LLM endpoint. For a local server, any string works since it doesn't require authentication.
+- **base-url**: Base URL for the OpenAI-compatible REST API (defaults to a local server on `http://127.0.0.1:8888/v1`). Change if running a different LLM backend.
+- **timeout**: Spring AI 2.0's OpenAI client (openai-java SDK) defaults this to **60s**, which kills long local-LLM calls (final report generation) with `OpenAIIoException: Stream failed` / `InterruptedIOException: timeout`. Set to `600s`, kept in sync with `spring.ai.sse.timeout`.
+- **model**: The model name for all LLM calls — should match the locally available model tag (see the active default in `application.yml`).
 - **temperature**: Controls randomness in text generation (0.7 = balanced creativity/determinism).
 
 #### MCP Server Configuration
@@ -111,6 +113,42 @@ spring.ai.sse.timeout: 600000             # SSE emitter timeout — 10 minutes o
 
 When an SSE connection has no activity for this duration, it is automatically closed by Spring's `SseEmitter`. Prevents stale connections from accumulating. Actual streaming uses `ResearchStreamingService.registerStream()` which respects this value via property injection.
 
+#### JWT Authentication Configuration
+
+```yaml
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:dev-only-research-agent-jwt-secret-change-me!}
+      expiration-seconds: 28800   # 8 h — survives a work session, bounds replay value
+      issuer: research-agent
+```
+
+- **secret**: HS256 signing key. The default is **DEV-ONLY** — override with the `JWT_SECRET` env var in production. `JwtService` refuses to start with a secret shorter than 32 bytes.
+- **expiration-seconds**: Token lifetime (default 8 h).
+
+#### Research Pipeline Configuration
+
+```yaml
+app:
+  research:
+    default-max-iterations: 3   # fallback LLM rounds per sub-topic when the request omits maxIterations
+    quality-eval:
+      enabled: true             # run a structured quality gate before final report generation
+      min-score: 6              # minimum overall score (0–10) to pass without supplementary research
+```
+
+#### Web Content Cache Configuration
+
+```yaml
+app:
+  cache:
+    enabled: true
+    ttl: P7D   # entries self-expire via a TTL index on fetchedAt; keep ttl ≤ P7D or Mongo expires first
+```
+
+URL → scraped-text Mongo cache (`web_page_cache`) consulted by `UrlReaderTool` and inlined by `WebSearchTool.formatHits`. All cache failures are swallowed — the cache must never break research.
+
 #### Async Task Executor Configuration
 
 ```yaml
@@ -151,6 +189,8 @@ app:
 | `spring-boot-starter-web` | REST web server support (Tomcat embedded, Spring MVC) |
 | `spring-boot-starter-data-mongodb` | MongoDB data access via Spring Data MongoDB (replaces the former JPA starter + PostgreSQL driver) |
 | `spring-boot-starter-validation` | Bean validation (@NotBlank, @Min annotations) |
+| `spring-boot-starter-security` | Stateless JWT security chain for `/api/**` (BCrypt password encoding, filter registration) |
+| `nimbus-jose-jwt` | Self-contained HS256 JWT issue/validate in `JwtService` — no Jackson 2 on the classpath |
 
 #### Development Dependencies
 
@@ -160,8 +200,9 @@ app:
 | `lombok` | Provided | Annotation processor for @Data, @SlfJ4 (compile-time only) |
 | `spring-boot-starter-test` | Test | JUnit 5, Mockito, Spring Test support |
 | `spring-boot-webmvc-test` | Test | MVC test slice (`@WebMvcTest`) — split into its own artifact in Spring Boot 4 |
+| `spring-security-test` | Test | `@WithMockUser` and friends for security-aware controller tests |
 
-**Note:** No schema migration tooling is in use. The legacy PostgreSQL DDL file (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path; MongoDB collections/indexes are auto-created from entity annotations.
+**Note:** No schema migration tooling is in use. The legacy PostgreSQL DDL file (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path. Collections are auto-created, but indexes are **not** (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false) — they must be created explicitly where needed.
 
 ---
 
@@ -169,8 +210,9 @@ app:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local Ollama accepts any value. |
-| `OLLAMA_BASE_URL` | No | http://localhost:1234 | Base URL for OpenAI-compatible REST API (Ollama by default) |
+| `OPENAI_API_KEY` | No* | (embedded default) | API key for LLM endpoint. A default is embedded in application.yml but env var overrides it. *Required only if using a remote LLM; local servers accept any value. |
+| `OLLAMA_BASE_URL` | No | http://127.0.0.1:8888/v1 | Base URL for OpenAI-compatible REST API (local server by default) |
+| `JWT_SECRET` | Production | dev-only default | HS256 signing secret for JWTs — must be overridden in production (min 32 bytes) |
 | `LLM_MODEL` | No | google/gemma-4-26b-a4b-qat | Model name — should match locally available Ollama model tag |
 | `OLLAMA_API_KEY` | Conditional | — | Bearer token for the ollama_web_search MCP server and the Ollama hosted web_search backend |
 | `FIRECRAWL_BASE_URL` | No | http://localhost:3002 | Base URL of the self-hosted Firecrawl API (search + scrape backends) |
@@ -187,6 +229,9 @@ app:
 | `src/main/java/com/researchagent/config/ChatClientConfig.java` | ChatClient bean (auto-configured by Spring AI from properties) | Config class |
 | `src/main/java/com/researchagent/config/AsyncConfig.java` | Named ThreadPoolTaskExecutor bean for research processing | Config class |
 | `src/main/java/com/researchagent/config/WebConfig.java` | CORS configuration for Angular dev server origins | Config class |
+| `src/main/java/com/researchagent/security/SecurityConfig.java` | Stateless JWT security chain (only `/api/**` protected; SPA shell public) | Config class |
+| `src/main/java/com/researchagent/security/JwtService.java`, `JwtAuthFilter.java` | HS256 JWT issue/validate + in-chain bearer filter | Security |
+| `src/main/java/com/researchagent/config/WebPageCacheIndexInitializer.java` | Explicit `web_page_cache` unique/TTL index creation at startup | Config class |
 | `src/main/resources/db/migration/V1__init_research_tables.sql` | Legacy PostgreSQL schema DDL — retained untouched as a rollback path (not used at runtime) | Migration |
 | `scripts/migrate_pg_to_mongo.py` | One-shot PG→Mongo data migration (idempotent, read-only against PostgreSQL) | Migration |
 

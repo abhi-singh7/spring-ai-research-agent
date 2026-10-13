@@ -2,7 +2,9 @@
 
 ## Overview
 
-The backend uses **MongoDB** (migrated from PostgreSQL). All data lives in a single collection, `research_session`, where each session document **embeds its steps** as an array. There is no separate step collection, no foreign keys, and no schema migration tooling — collections and indexes are created automatically by Spring Data MongoDB from the entity annotations.
+The backend uses **MongoDB** (migrated from PostgreSQL). Research data lives in a single collection, `research_session`, where each session document **embeds its steps** as an array. There is no separate step collection, no foreign keys, and no schema migration tooling — collections are created automatically on first write.
+
+**Note on indexes:** Spring Data MongoDB 5.x (Spring Boot 4) defaults `spring.data.mongodb.auto-index-creation` to **false**, so `@Indexed`/`@CompoundIndex` annotations are NOT auto-created in this project. Collections run index-less unless indexes are created explicitly — e.g., `WebPageCacheIndexInitializer` ensures the `web_page_cache` unique/TTL indexes at startup via `MongoOperations.indexOps(...).ensureIndex(...)`.
 
 Connection settings (`src/main/resources/application.yml`):
 
@@ -34,11 +36,12 @@ One document per research session (entity: `ResearchSession`, `@Document(collect
 | `prompt` | string (nullable) | System prompt used for this session |
 | `steps` | array of embedded documents | Full step list (see below), ordered by `orderIndex` |
 | `finalReport` | string (nullable) | Synthesized research report content |
+| `followUps` | array of embedded documents | Answered follow-up Q&A pairs (`FollowUpExchange`: id, question, answer, createdAt), chronological — persisted on successful answer only |
 | `createdAt` | date | Session creation timestamp (set by the orchestrator) |
 | `updatedAt` | date (nullable) | Last update timestamp |
 | `completedAt` | date (nullable) | Completion/failure/cancellation timestamp |
 
-**Indexes (auto-created from annotations):**
+**Index annotations (present on the entity, NOT auto-created — see note above):**
 - Compound index `status_createdAt` on `{ status: 1, createdAt: -1 }` (`@CompoundIndex`) — covers status filtering and history ordering in one query
 - Single-field index on `createdAt` (`@Indexed`)
 
@@ -113,6 +116,7 @@ Each element is a `ResearchStep` sub-document (no `_id` at the collection level 
   - `findAllByStatusAndCreatedAtBefore(ResearchStatus, LocalDateTime)` — abandoned-session lookup for the cleanup scheduler (derived by Spring Data MongoDB into a criteria query)
 - `ResearchSessionRepositoryCustom` / `...CustomImpl` — repository fragment using `MongoTemplate` for what derived queries can't express:
   - `markCancelledIfProcessing(UUID, LocalDateTime, String)` — conditional `updateFirst()` that transitions a session to CANCELLED **only if it is still PROCESSING**. The "no clobber" rule holds at the database level: documents already in a terminal state are left untouched. Returns the matched count (0 = another writer reached a terminal state first).
+  - `markResumableIfTerminal(UUID, LocalDateTime)` — conditional `updateFirst()` that flips a FAILED/CANCELLED session back to PROCESSING (clearing the failure `finalReport`, refreshing `updatedAt`) for the resume flow. Returns the matched count (0 = lost the claim race → API responds 409).
 
 ---
 
@@ -141,3 +145,48 @@ python migrate_pg_to_mongo.py --skip-existing    # never touch docs already in M
 - Steps are embedded sorted by `orderIndex`, matching the Spring Data Mongo entities exactly.
 
 **Rollback path:** PostgreSQL is retained untouched. The original schema DDL remains at `src/main/resources/db/migration/V1__init_research_tables.sql` (two tables: `research_session` + `research_step` with FK cascade). No migration runner (Flyway) is in use — the file is reference-only.
+
+---
+
+## Other Collections
+
+### `user` — Authentication Users
+
+Created by the JWT authentication feature (`openspec/changes/add-jwt-authentication`). Entity: `User`.
+
+| Field | BSON Type | Description |
+|-------|-----------|-------------|
+| `_id` | UUID (STANDARD) | Unique user identifier |
+| `username` | string | Unique login name |
+| `password` | string | BCrypt hash — never plaintext |
+| `role` | string | Authority (currently always `USER`) |
+| `createdAt` | date | Account creation timestamp |
+
+### `llm_logs` — LLM Call Log
+
+One document per model round, written by `LoggingAdvisor` (a `CallAdvisor` + `StreamAdvisor`). Entity: `LLMLogs`.
+
+| Field | BSON Type | Description |
+|-------|-----------|-------------|
+| `_id` | UUID (STANDARD) | Log entry identifier |
+| `sessionId` | UUID (STANDARD, nullable) | Research session the call belongs to (null for session-less calls) |
+| `prompt` | string | Full rendered prompt, including explicit tool-call/tool-result markers |
+| `response` | string | Model response text (accumulated for streaming) |
+| `model` | string | Model name used |
+| `streaming` | bool | Whether the call went through `.stream()` |
+| `status` | string | `SUCCESS` / `ERROR` (+ error message on failure) |
+| `durationMs` | long | Wall-clock duration of the model round |
+| `createdAt` | date | When the round completed |
+
+Query per session via `LlmLogRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)`.
+
+### `web_page_cache` — URL → Content Cache
+
+Entity: `WebPageCacheEntry`. Entries self-expire via a TTL index on `fetchedAt` (default P7D). Indexes are created explicitly at startup by `WebPageCacheIndexInitializer` (auto-index-creation is off).
+
+| Field | BSON Type | Description |
+|-------|-----------|-------------|
+| `_id` | UUID (STANDARD) | Cache entry identifier |
+| `url` | string | Normalized URL — unique key |
+| `content` | string | Scraped page text (markdown/plain) |
+| `fetchedAt` | date | Fetch timestamp — TTL-indexed (~1 week) |
