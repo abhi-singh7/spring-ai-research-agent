@@ -18,8 +18,10 @@ A full-stack AI-powered research tool: submit a topic → LLM breaks it into sub
 Research-Agent/
 ├── research-agent-backend/          # Spring Boot application
 │   ├── src/main/java/com/researchagent/
-│   │   ├── config/                  # ChatClientConfig, AsyncConfig, WebConfig (CORS)
-│   │   ├── controller/              # ResearchController, ResearchStreamController
+│   │   ├── config/                  # ChatClientConfig, AsyncConfig, WebConfig (CORS), WebPageCacheIndexInitializer
+│   │   ├── security/                # SecurityConfig (stateless JWT chain), JwtAuthFilter, JwtService
+│   │   ├── advisor/                 # LoggingAdvisor — every LLM call logged to llm_logs
+│   │   ├── controller/              # ResearchController, AuthController, HealthController, ResearchStreamController
 │   │   ├── model/
 │   │   │   ├── dto/                 # Request/Response DTOs (ResearchRequest, StepDTO, etc.)
 │   │   │   ├── entity/              # Mongo documents (ResearchSession with embedded ResearchStep)
@@ -42,8 +44,10 @@ Research-Agent/
 │   │   │   ├── active-research/              # Live streaming session view
 │   │   │   ├── research-input/               # New research form with quick-start chips
 │   │   │   ├── research-history/             # Paginated history + search/bulk-delete
-│   │   │   └── history-detail/               # Historical session detail + follow-up
-│   │   ├── shared/components/                # Reusable components (step-list, report-viewer, followup-form)
+│   │   │   ├── history-detail/               # Historical session detail + follow-up thread + resume
+│   │   │   ├── login/                        # Login/register (only unguarded route)
+│   │   │   └── report-document/              # Full-page report document view
+│   │   ├── shared/components/                # Reusable components (step-list, report-viewer, followup-thread)
 │   │   ├── app.routes.ts                     # Lazy-loaded route definitions
 │   │   └── app.config.ts                     # App providers (Router, HttpClient, Markdown)
 │   ├── proxy.conf.json                       # Dev server proxy: /api → localhost:8080
@@ -61,7 +65,7 @@ Research-Agent/
 - **Java 21** (OpenJDK recommended)
 - **Node.js 20+** with npm
 - **MongoDB** running locally (default URI `mongodb://localhost:27017/research-agent` — the database is created automatically)
-- **Ollama** running locally — e.g., a model like `gemma-4-26b` available at `http://localhost:1234`
+- A local OpenAI-compatible LLM server (see `OLLAMA_BASE_URL` in the backend config, default `http://127.0.0.1:8888/v1`) with a model matching `spring.ai.openai.chat.options.model`
 - **Firecrawl** (self-hosted, preferred search/scrape backend) — start the Docker stack in `infra/firecrawl/` (API on `http://localhost:3002`; see [docs/firecrawl-self-hosted.md](docs/firecrawl-self-hosted.md)). If it's down, search degrades gracefully through the fallback chain (`ddg → ollama_web_search → tavily`)
 
 ### Backend
@@ -70,8 +74,10 @@ Research-Agent/
 cd research-agent-backend
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 mvn spring-boot:run          # Starts on port 8080
-curl http://localhost:8080/api/research/history   # Verify running
+curl http://localhost:8080/api/health             # Verify running (unauthenticated liveness probe)
 ```
+
+All `/api/research/**` endpoints require a JWT — register or log in first (`POST /api/auth/register` / `POST /api/auth/login`) and send `Authorization: Bearer <token>`. The Angular app handles this via its login screen; see [backend API reference](research-agent-backend/docs/API.md) for the full contract.
 
 ### Frontend
 
@@ -109,7 +115,7 @@ See [Backend ARCHITECTURE](research-agent-backend/docs/ARCHITECTURE.md) and [Fro
 - **Angular Material M3 theming**: Use `mat.define-theme((color: ()))`. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — cannot be called at root level.
 - **SSE streaming**: Backend uses `Flux<String>` via `.stream().content()`; frontend detects connection loss with exponential backoff reconnection and falls back to polling on failure. A stall timer (90s) forces completion detection if no chunks arrive during report generation.
 - **Abandoned session cleanup**: Background scheduler marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`).
-- **MongoDB storage (migrated from PostgreSQL)**: sessions live in a single `research_session` collection with steps embedded — no schema migrations needed (collections/indexes are auto-created). UUIDs use the STANDARD BSON representation; the one-shot PG→Mongo data migration lives in `scripts/migrate_pg_to_mongo.py`. The legacy PG schema (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path.
+- **MongoDB storage (migrated from PostgreSQL)**: sessions live in a single `research_session` collection with steps embedded — no schema migrations needed. Collections are auto-created, but indexes are **not** (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false). UUIDs use the STANDARD BSON representation; the one-shot PG→Mongo data migration lives in `scripts/migrate_pg_to_mongo.py`. The legacy PG schema (`db/migration/V1__init_research_tables.sql`) is retained untouched as a rollback path.
 
 ## Documentation Index
 

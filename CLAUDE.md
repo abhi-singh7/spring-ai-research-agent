@@ -60,22 +60,28 @@ The proxy config forwards `/api` requests to the Spring Boot backend.
 { path: 'research/:sessionId', loadComponent: () => import('./features/active-research/active-research.component') }
 { path: 'research/history', loadComponent: () => import('./features/research-history/research-history.component') }
 { path: 'research/history/:sessionId', loadComponent: () => import('./features/history-detail/history-detail.component') }
+{ path: 'research/history/:sessionId/report', loadComponent: () => import('./features/report-document/report-document.component') }
+{ path: 'login', loadComponent: () => import('./features/login/login.component') }   // only unguarded route
 ```
+All routes except `login` are gated by `authGuard` (`core/guards/auth.guard.ts`).
 
 ### Components (all standalone)
-- `src/app/features/active-research/` — Live streaming session view with step list, report viewer, cancel/follow-up forms
+- `src/app/features/active-research/` — Live streaming session view with step list, report viewer, cancel button
 - `src/app/features/research-input/` — New research form with topic input and quick-start chips
-- `src/app/features/research-history/` — Paginated history with search/filter
-- `src/app/features/history-detail/` — Historical session detail + follow-up
+- `src/app/features/research-history/` — Paginated history with search/filter + bulk delete
+- `src/app/features/history-detail/` — Historical session detail + follow-up thread + resume
+- `src/app/features/login/` — Login/register entry point (only unguarded route)
+- `src/app/features/report-document/` — Full-page report document view
 
 ### Shared Components (all standalone)
 - `src/app/shared/components/step-list/` — Step progress display with status icons and animations
-- `src/app/shared/components/report-viewer/` — Report content renderer (raw text fallback)
-- `src/app/shared/components/followup-form/` — Inline follow-up question form
+- `src/app/shared/components/report-viewer/` — Report content renderer (marked → sanitized HTML, raw-text fallback)
+- `src/app/shared/components/followup-thread/` — Threaded follow-up Q&A for completed sessions
 
 ### Services
 - `src/app/core/services/research.service.ts` — Primary service: REST calls + SSE via EventSource API. Manages signal state (researchSession, researchSteps, reportContent, isStreaming). Includes polling fallback when SSE disconnects.
 - `src/app/core/services/research-history.service.ts` — Paginated history queries
+- `src/app/core/services/auth.service.ts` — JWT token (localStorage) + app-wide auth state; `AuthInterceptor` attaches the Bearer header, 401 → /login
 
 ### Configuration
 - `proxy.conf.json` — Dev server proxy: `/api` → `http://localhost:8080`
@@ -90,6 +96,6 @@ The proxy config forwards `/api` requests to the Spring Boot backend.
 4. **tsConfig in angular.json**: Only add `tsConfig` to the `build` builder options, NOT the `serve` builder (schema validation error).
 5. **Angular Material M3 theming**: Use `mat.define-theme((color: ()))` for default theme. The `all-component-themes($theme)` mixin must be wrapped in a CSS selector — it cannot be called at root level.
 6. **SSE resilience**: Frontend uses exponential backoff reconnection (max 3 attempts) before falling back to polling. A 90-second stall timer forces completion detection if no chunks arrive during report generation.
-7. **Abandoned session cleanup**: `AbandonedSessionCleanupService` marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT15M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`). Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
-8. **MongoDB storage (migrated from PostgreSQL)**: sessions are stored in a single `research_session` collection with steps embedded in the document — no schema migrations; indexes are auto-created from entity annotations. UUIDs use the STANDARD BSON representation (`spring.mongodb.representation.uuid: STANDARD`), kept in sync with the one-shot migration script `scripts/migrate_pg_to_mongo.py`. The legacy PG schema is retained untouched as a rollback path.
+7. **Abandoned session cleanup**: `AbandonedSessionCleanupService` marks PROCESSING sessions stuck >`app.cleanup.stale-after` (default `PT45M`) as CANCELLED every `app.cleanup.interval` (default `PT20M`). Configurable via `app.cleanup.stale-after` and `app.cleanup.interval`.
+8. **MongoDB storage (migrated from PostgreSQL)**: sessions are stored in a single `research_session` collection with steps embedded in the document — no schema migrations; indexes are NOT auto-created (Spring Data MongoDB 5.x / Boot 4 defaults `auto-index-creation` to false). UUIDs use the STANDARD BSON representation (`spring.mongodb.representation.uuid: STANDARD`), kept in sync with the one-shot migration script `scripts/migrate_pg_to_mongo.py`. The legacy PG schema is retained untouched as a rollback path.
 9. **LLM call logging**: `LoggingAdvisor` persists every LLM request/response pair to the `llm_logs` collection. It implements both `CallAdvisor` and `StreamAdvisor` (Spring AI 2.0 routes `.call()`/`.stream()` through separate advisor chains) and is registered explicitly via `.defaultAdvisors(...)` on the ChatClient — Spring AI 2.0 does not auto-pick-up Advisor beans. With order 0 it sits inside ToolCallingAdvisor, so each model round of a tool-calling exchange gets its own document; tool calls and results are rendered with explicit markers because Spring AI keeps them outside `Message.getText()`. Session attribution is threaded through the advisor context (`LlmGateway` methods take the session id first — not ThreadLocal, since stream callbacks run on Reactor threads). Persist failures are swallowed so logging never breaks the pipeline. Per-session history: `LlmLogRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)`.

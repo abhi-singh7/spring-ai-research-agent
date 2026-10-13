@@ -10,7 +10,7 @@ Spring Boot + Spring AI application for autonomous research.
 ## Configuration
 
 Set these environment variables:
-- `OLLAMA_BASE_URL` — Local LLM API URL (default: http://localhost:1234 — no `/v1` suffix)
+- `OLLAMA_BASE_URL` — Local OpenAI-compatible LLM API URL (default: `http://127.0.0.1:8888/v1`)
 - `LLM_MODEL` — Model name (default: google/gemma-4-26b-a4b-qat)
 - `TAVILY_API_KEY` — Optional Tavily Search API key for enhanced search
 

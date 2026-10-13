@@ -148,15 +148,16 @@ export interface FollowUpRequest {
 }
 ```
 
-### FollowUpResponse — Response from Follow-up Endpoint
+### FollowUpExchange — Stored Follow-Up Q&A Pair
 
-Returned from `POST /api/research/{sessionId}/followup`. Contains the LLM-generated answer. Note: the backend returns raw text (string), not an object with sessionId/answer/timestamp fields — the frontend interface includes these for completeness but the actual response is a plain string.
+Returned by `POST /api/research/{sessionId}/followup` (201), listed by `GET /api/research/{sessionId}/followups`, and embedded on the session (`ResearchSession.followUps`). Exchanges are persisted on the backend session document, chronological.
 
 ```typescript
-export interface FollowUpResponse {
-  sessionId: string;       // Session that generated this answer
-  answer: string;          // The LLM's response text
-  timestamp: string;       // ISO timestamp of when the answer was generated
+export interface FollowUpExchange {
+  id: string;              // Exchange identifier
+  question: string;        // The follow-up question text
+  answer: string;          // The LLM-generated answer
+  createdAt: string;       // ISO timestamp of when the exchange was stored
 }
 ```
 

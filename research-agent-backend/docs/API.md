@@ -8,7 +8,37 @@ The backend exposes a RESTful API for managing research sessions and an SSE (Ser
 
 ## Authentication
 
-No authentication is implemented in the current version. The service relies on CORS restrictions to limit access to authorized origins (`http://localhost:4200`, `http://127.0.0.1:4200` for development).
+All `/api/**` endpoints require a **JWT Bearer token** (`Authorization: Bearer <token>`), issued by the auth endpoints below. The SPA shell (`index.html`, JS/CSS bundles) and client-side routes are public — the browser cannot send a Bearer header on page/asset loads.
+
+Public paths (no token required):
+- `/api/auth/**` — register / login / me
+- `/api/health` — unauthenticated liveness probe (used by deploy gates)
+- `/api/research/stream/**` — permitted through the filter chain, but the endpoint **self-validates a `?token=` query parameter** before opening the SSE connection (EventSource cannot set headers); invalid/missing token → 401 JSON
+
+Unauthenticated calls to protected endpoints return `401 {"error": "Authentication required"}`; the Angular app redirects to `/login` on 401.
+
+### `POST /api/auth/register` — Register a New User
+
+- **Request Body**: `{ "username": "...", "password": "..." }`
+- **Response**: `201 Created` — `{ "token": "<jwt>", "username": "..." }` (auto-login)
+- **Response**: `409 Conflict` — username already taken
+- **Response**: `400 Bad Request` — validation failure (e.g., short password)
+
+### `POST /api/auth/login` — Exchange Credentials for a JWT
+
+- **Request Body**: `{ "username": "...", "password": "..." }`
+- **Response**: `200 OK` — `{ "token": "<jwt>", "username": "..." }`
+- **Response**: `401 Unauthorized` — `{ "error": "Invalid username or password" }`
+
+### `GET /api/auth/me` — Current Identity
+
+- **Header**: `Authorization: Bearer <token>` (the path is permitted through the chain; this endpoint enforces auth itself)
+- **Response**: `200 OK` — `{ "username": "...", "role": "USER", "createdAt": "..." }`
+- **Response**: `401 Unauthorized` — missing/invalid token or unknown user
+
+### `GET /api/health` — Liveness Probe
+
+Unauthenticated health check. **Response**: `200 OK`.
 
 ---
 
@@ -17,9 +47,10 @@ No authentication is implemented in the current version. The service relies on C
 | Status Code | Meaning |
 |-------------|---------|
 | 400 | Bad Request — invalid input, session not in expected state (e.g., cancel a non-PROCESSING session, bulk delete with empty body) |
-| 401/403 | Not applicable — no auth implemented |
+| 401 | Unauthorized — missing/invalid Bearer JWT (or `?token=` on the SSE endpoint), bad credentials |
+| 403 | Forbidden — authenticated but not allowed |
 | 404 | Not Found — research session does not exist |
-| 409 | Conflict — trying to delete a PROCESSING session (single or bulk) |
+| 409 | Conflict — trying to delete a PROCESSING session (single or bulk); resume of a COMPLETED/PROCESSING session; lost resume claim race |
 | 500 | Internal Server Error — LLM call failure or unexpected backend error |
 
 ---
@@ -89,6 +120,18 @@ Cancels a running research session. Only works while the session is in `PROCESSI
 
 - **Response**: `204 No Content`
 - **Response**: `400 Bad Request` — Session not found or not in PROCESSING state
+
+---
+
+### `POST /api/research/{sessionId}/resume` — Resume a Failed/Cancelled Session
+
+Atomically claims a terminal session (`FAILED`/`CANCELLED` → `PROCESSING`, clearing the failure report) and continues the pipeline from the stored steps: completed sub-topics are reused verbatim, failed/missing ones are re-researched in place, then the quality gate and streamed final report run as usual.
+
+- **Path Parameter**: `sessionId` (UUID, required)
+
+- **Response**: `200 OK` — `ResearchResponse` with status `PROCESSING`
+- **Response**: `404 Not Found` — Session not found
+- **Response**: `409 Conflict` — Session is COMPLETED or already PROCESSING, or a concurrent resume won the claim race
 
 ---
 
@@ -205,7 +248,7 @@ Retrieves the synthesized research report for a completed session. Falls back to
 
 ### `POST /api/research/{sessionId}/followup` — Submit Follow-Up Question
 
-Submits a follow-up question about the research findings of a completed session. The LLM answers based on the previous research report (truncated to 2000 chars) and the new question.
+Submits a follow-up question about the research findings of a completed session. The answer is grounded in the full conversation context (topic + report + prior Q&A transcript) and the exchange is **persisted on the session document**; the stored exchange is returned.
 
 - **Path Parameter**: `sessionId` (UUID, required)
 
@@ -216,7 +259,27 @@ Submits a follow-up question about the research findings of a completed session.
   }
   ```
 
-- **Response**: `200 OK` — The LLM-generated answer as plain text
+- **Response**: `201 Created` — `FollowUpExchangeDTO`
+  ```json
+  {
+    "id": "...",
+    "question": "...",
+    "answer": "...",
+    "createdAt": "2026-06-03T10:05:00"
+  }
+  ```
+- **Response**: `400 Bad Request` — Session not in COMPLETED state
+- **Response**: `404 Not Found` — Session not found
+
+---
+
+### `GET /api/research/{sessionId}/followups` — Get Stored Follow-Up Thread
+
+Returns the session's persisted follow-up Q&A pairs in chronological order.
+
+- **Path Parameter**: `sessionId` (UUID, required)
+
+- **Response**: `200 OK` — `List<FollowUpExchangeDTO>`
 - **Response**: `404 Not Found` — Session not found
 
 ---
@@ -225,9 +288,10 @@ Submits a follow-up question about the research findings of a completed session.
 
 ### `GET /api/research/stream/{sessionId}` — Subscribe to Real-Time Progress Events
 
-Establishes a Server-Sent Events connection for real-time progress updates. Note: This endpoint uses a standalone SseEmitter in `ResearchStreamController` that is **not wired** into the actual streaming service (`ResearchStreamingService`). The frontend connects here but events are sent via `ResearchOrchestratorService` → `ResearchStreamingService.sendReportChunk()` etc.
+Establishes a Server-Sent Events connection for real-time progress updates. The path is permitted through the security filter chain (EventSource cannot send headers), so the endpoint validates the JWT **via a `?token=` query parameter** and answers 401 JSON before opening the stream.
 
 - **Path Parameter**: `sessionId` (UUID, required)
+- **Query Parameter**: `token` (string) — the JWT, validated by `JwtService` before the stream opens
 - **Produces**: `text/event-stream`
 - **Timeout**: 10 minutes (`600000ms`) — the SseEmitter closes after this period of inactivity
 

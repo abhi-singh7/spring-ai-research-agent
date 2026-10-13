@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Angular frontend is a single-page application that provides real-time visualization of research sessions, including step-by-step progress tracking and streaming report display. It communicates with the backend via REST API (for status queries) and SSE (for real-time progress updates), with automatic fallback to polling on connection failure.
+The Angular frontend is a single-page application that provides real-time visualization of research sessions, including step-by-step progress tracking and streaming report display. It communicates with the backend via REST API (for status queries) and SSE (for real-time progress updates), with automatic fallback to polling on connection failure. All screens except `/login` are JWT-protected: `AuthService` owns the token, `AuthInterceptor` attaches it to every HTTP request, `authGuard` gates the routes, and the SSE connection passes the token as a `?token=` query parameter.
 
 ## System Architecture
 
@@ -16,12 +16,15 @@ The Angular frontend is a single-page application that provides real-time visual
 │  │               │   │                  │  │
 │  │ • active-     │   │ • step-list      │  │
 │  │   research    │   │ • report-viewer  │  │
-│  │ • history-    │   │ • followup-form  │  │
+│  │ • history-    │   │ • followup-thread│  │
 │  │   detail      │   └──────────────────┘  │
 │  │ • research-   │                         │
 │  │   input       │                         │
 │  │ • research-   │                         │
 │  │   history     │                         │
+│  │ • login       │                         │
+│  │ • report-     │                         │
+│  │   document    │                         │
 │  └───────┬───────┘                         │
 │          │                                  │
 │  ┌───────▼─────────────────────────────┐    │
@@ -100,13 +103,22 @@ Detailed view for a completed, failed, or cancelled session. Contains:
 1. Back button to `/research/history`
 2. Session info card with topic + status chip
 3. `<step-list>` showing historical steps from the detail endpoint response
-4. `<report-viewer>` if report exists
-5. `<followup-form>` component — shown only for COMPLETED sessions (for asking questions about past research)
+4. `<report-viewer>` if report exists, plus a link to the full-page document view (`/research/history/{sessionId}/report` → `ReportDocumentComponent`)
+5. `<followup-thread>` component — shown only for COMPLETED sessions (threaded Q&A about past research)
+6. Resume action for FAILED/CANCELLED sessions (`POST /{sessionId}/resume`, 409 handling)
 
 **Key logic:**
-- Fetches session via `ResearchHistoryService.getHistoricalSession()` which calls `/api/research/history/{sessionId}`
+- Fetches session via `ResearchHistoryService.getHistoricalSession()` which calls `/api/research/history/{sessionId}` (response includes the persisted `followUps` thread)
 - Maps backend step data to frontend `ResearchStep[]` format using `getStepName()` for display names
-- Follow-up form posts question to `/api/research/{sessionId}/followup` and displays the answer
+- Follow-up thread seeds from the stored exchanges and posts new questions to `/api/research/{sessionId}/followup`
+
+#### `LoginComponent` — Authentication Entry Point
+
+The only unguarded route (`/login`). Username/password form with login **and** register modes; on success stores the JWT via `AuthService.completeLogin()` and redirects to the original destination (or `/research/new`). Handles `?reason=expired` so users see why a previously stored token was rejected at boot.
+
+#### `ReportDocumentComponent` — Full-Page Report View
+
+Full-page document view of a completed session's report (`/research/history/{sessionId}/report`) for comfortable reading, separate from the embedded `<report-viewer>` card.
 
 ### Shared Components (Standalone, Reusable)
 
@@ -135,18 +147,24 @@ Displays research report content in a card with header. Contains:
 - `content = input.required<string>()` — required report content string
 - `title = input('Research Report')` — optional title with default value
 
-#### `FollowUpFormComponent` (`<followup-form>`)
+#### `FollowUpThreadComponent` (`<followup-thread>`)
 
-Inline form for submitting follow-up questions about past research. Two display modes:
-1. **Answer mode** (when an answer exists): Shows the LLM's answer in a styled `<pre>` block
-2. **Question mode** (no answer yet): Form with textarea + submit button, disabled while loading
+Threaded follow-up chat for completed sessions: renders the persisted Q&A pairs (seeded in `ngAfterViewInit` from the session detail's `followUps`) plus a composer for new questions.
 
 **Inputs:**
-- `sessionId = input.required<string>()` — required session ID for the follow-up API call
+- `sessionId = input.required<string>()` — required session ID for the follow-up API calls
 
 **Key logic:**
-- On submit: calls `researchSession.submitFollowUp(sessionId(), question)` which returns an Observable
-- After receiving answer, updates local state to display mode 1 (answer mode)
+- On submit: calls `researchSession.submitFollowUp(sessionId(), question)` which returns the persisted `FollowUpExchange` (201) and appends it to the thread
+- Cleanup via `DestroyRef`/`takeUntilDestroyed`
+
+### Authentication Plumbing (core)
+
+| Piece | Role |
+|-------|------|
+| `AuthService` (`core/services`) | Owns the JWT (localStorage key `ra-auth-token`) + app-wide auth state signal (`checking → authenticated \| anonymous`). `restoreSession()` returns a single cached promise so boot and route guards share one `GET /api/auth/me` request. `restoreExpired` flags a rejected stored token (→ `/login?reason=expired`). |
+| `AuthInterceptor` (`core/interceptors`) | Attaches `Authorization: Bearer <token>` to every HTTP request; 401 responses redirect to `/login`. |
+| `authGuard` (`core/guards`) | Route guard for all routes except `login`; waits on `restoreSession()` before deciding. |
 
 ---
 
@@ -451,9 +469,11 @@ In production, this proxy must be replaced with either:
 
 The app splits into the following lazy-loaded chunk groups:
 - `active-research-component` (14.55 kB) — Active session view + step-list + report-viewer
-- `history-detail-component` (11.09 kB) — History detail + report-viewer + followup-form
-- `research-input-component` (7.15 kB) — Research form with chips and validation
-- `research-history-component` (5.65 kB) — History list view
+- `history-detail-component` — History detail + report-viewer + followup-thread + resume action
+- `research-input-component` — Research form with chips and validation
+- `research-history-component` — History list view
+- `login-component` — Authentication entry point (unguarded)
+- `report-document-component` — Full-page report document view
 
 ### Shared Chunk
 
