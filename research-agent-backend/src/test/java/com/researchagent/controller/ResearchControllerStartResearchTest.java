@@ -46,7 +46,7 @@ class ResearchControllerStartResearchTest {
         mockSession.setTopic(topic);
         mockSession.setStatus(ResearchStatus.PROCESSING);
 
-        when(orchestratorService.createAndStart(any())).thenReturn(mockSession);
+        when(orchestratorService.createAndStart(any(), any())).thenReturn(mockSession);
 
         ResearchRequest request = new ResearchRequest();
         request.setTopic(topic);
@@ -107,6 +107,32 @@ class ResearchControllerStartResearchTest {
         ResearchRequest request = new ResearchRequest();
         request.setTopic("Machine learning");
         request.setSubTopicCount(0);
+
+        mockMvc.perform(post("/api/research")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void startResearch_shouldReturn400WhenSubTopicCountExceedsCeiling() throws Exception {
+        // Given: a valid topic but subTopicCount = 50 (violates @Max(10)) — the ceiling is what stops one
+        // caller turning the endpoint into hours of sequential LLM research (openspec/changes/bounded-research-params)
+        ResearchRequest request = new ResearchRequest();
+        request.setTopic("Machine learning");
+        request.setSubTopicCount(50);
+
+        mockMvc.perform(post("/api/research")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void startResearch_shouldReturn400WhenMaxIterationsExceedsCeiling() throws Exception {
+        ResearchRequest request = new ResearchRequest();
+        request.setTopic("Java concurrency");
+        request.setMaxIterations(99);
 
         mockMvc.perform(post("/api/research")
                 .contentType(MediaType.APPLICATION_JSON)

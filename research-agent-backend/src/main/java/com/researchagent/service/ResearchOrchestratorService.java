@@ -14,6 +14,7 @@ import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.model.enums.StepType;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.repository.ResearchSessionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +59,17 @@ public class ResearchOrchestratorService {
     private static final int MIN_SOURCES_FOR_COVERAGE = 3;
     private static final int MIN_NOTE_LENGTH_FOR_COVERAGE = 400;
 
+    /**
+     * Hard ceilings on the per-request research knobs. A caller asking for 200 sub-topics would otherwise
+     * get 200 sequential multi-round LLM searches (hours of work and a Mongo document that grows with it).
+     * Kept in sync with the jakarta {@code @Max} annotations on {@link ResearchRequest}, which reject
+     * out-of-range values with 400 before the pipeline starts; these constants are the service-side clamp
+     * for direct callers (openspec/changes/bounded-research-params).
+     */
+    private static final int MAX_SUBTOPICS = 10;
+    private static final int MAX_ROUNDS = 6;
+    private static final int DEFAULT_SUBTOPIC_COUNT = 5;
+
     /** Fallback for the iterative research rounds when the request does not specify maxIterations. */
     @Value("${app.research.default-max-iterations:3}")
     private int defaultMaxIterations;
@@ -76,37 +88,65 @@ public class ResearchOrchestratorService {
     private final ResearchStreamingService streamService;
     private final Executor researchTaskExecutor;
     private final ResearchCancellationRegistry cancellationRegistry;
+    private final LlmLogRepository llmLogRepository;
 
     public ResearchOrchestratorService(LlmGateway llmGateway, ObjectMapper objectMapper,
                                        ResearchSessionRepository sessionRepo,
                                        ResearchStreamingService streamService,
                                        @org.springframework.beans.factory.annotation.Qualifier("researchTaskExecutor") Executor researchTaskExecutor,
-                                       ResearchCancellationRegistry cancellationRegistry) {
+                                       ResearchCancellationRegistry cancellationRegistry,
+                                       LlmLogRepository llmLogRepository) {
         this.llmGateway = llmGateway;
         this.objectMapper = objectMapper;
         this.sessionRepo = sessionRepo;
         this.streamService = streamService;
         this.researchTaskExecutor = researchTaskExecutor;
         this.cancellationRegistry = cancellationRegistry;
+        this.llmLogRepository = llmLogRepository;
     }
 
     /**
      * Create a ResearchSession synchronously and kick off the async research process.
+     *
+     * <p>{@code owner} is the authenticated principal's username (see
+     * {@link com.researchagent.controller.ResearchController}); it is stored lowercased to match the
+     * {@code sub} claim written by {@link com.researchagent.security.JwtService} and gates every later
+     * per-session endpoint. The requested research depth is persisted on the document so a later resume
+     * re-runs failed sub-topics with the same budget instead of the configured default.</p>
      */
-    public ResearchSession createAndStart(ResearchRequest request) {
+    public ResearchSession createAndStart(ResearchRequest request, String owner) {
         // Create and persist the session synchronously. Steps are embedded in the document, so later
         // saves write the whole session (session + steps) as one atomic replace.
         ResearchSession session = new ResearchSession();
         session.setTopic(request.getTopic());
         session.setStatus(ResearchStatus.PROCESSING);
+        session.setOwner(owner != null ? owner.trim().toLowerCase() : null);
+        session.setSubTopicCount(clampSubTopicCount(request.getSubTopicCount()));
+        session.setMaxRounds(clampMaxRounds(request.getMaxIterations()));
         LocalDateTime now = LocalDateTime.now();
         session.setCreatedAt(now);
         session.setUpdatedAt(now);
 
         sessionRepo.save(session);
 
-        log.info("Created research session: {}", session.getId());
+        log.info("Created research session: {} (owner {})", session.getId(), session.getOwner());
         return session;
+    }
+
+    /** Clamp a requested sub-topic count into {@code 1..MAX_SUBTOPICS}; null means "use the default". */
+    private int clampSubTopicCount(Integer requested) {
+        if (requested == null) {
+            return DEFAULT_SUBTOPIC_COUNT;
+        }
+        return Math.max(1, Math.min(MAX_SUBTOPICS, requested));
+    }
+
+    /** Clamp a requested round count into {@code 1..MAX_ROUNDS}; null means "use the configured default". */
+    private int clampMaxRounds(Integer requested) {
+        if (requested == null) {
+            return Math.max(1, Math.min(MAX_ROUNDS, defaultMaxIterations));
+        }
+        return Math.max(1, Math.min(MAX_ROUNDS, requested));
     }
 
     // ==================== PROMPTS ====================
@@ -213,11 +253,10 @@ public class ResearchOrchestratorService {
                 return;
             }
 
-            int subTopicCount = request.getSubTopicCount() != null ? request.getSubTopicCount() : 5;
-            int maxRounds = request.getMaxIterations() != null ? request.getMaxIterations() : defaultMaxIterations;
-            if (maxRounds < 1) {
-                maxRounds = 1;
-            }
+            int subTopicCount = session.getSubTopicCount() != null ? session.getSubTopicCount()
+                    : clampSubTopicCount(request.getSubTopicCount());
+            int maxRounds = session.getMaxRounds() != null ? session.getMaxRounds()
+                    : clampMaxRounds(request.getMaxIterations());
 
             // --- Step 1: Break down topic into sub-topics, each with planned search queries ---
             PlanResult plan = planBreakdown(handle, sessionId, request.getTopic(), subTopicCount);
@@ -344,7 +383,8 @@ public class ResearchOrchestratorService {
             // --- Recover the original plan from the BREAKDOWN step (no LLM call when possible) ---
             List<SubTopic> planTopics = recoverPlan(session);
             if (planTopics.isEmpty()) {
-                PlanResult plan = planBreakdown(handle, sessionId, session.getTopic(), 5);
+                PlanResult plan = planBreakdown(handle, sessionId, session.getTopic(),
+                        session.getSubTopicCount() != null ? session.getSubTopicCount() : DEFAULT_SUBTOPIC_COUNT);
                 // No usable plan was stored — shift any existing marker steps down and insert the new
                 // breakdown at index 0 so step order stays sequential.
                 for (ResearchStep step : session.getSteps()) {
@@ -360,6 +400,9 @@ public class ResearchOrchestratorService {
             }
 
             // --- Reuse completed sub-topics verbatim; re-research failed/missing ones in place ---
+            // Depth comes from the session document: a user who asked for 5 rounds must not silently get
+            // the configured default when their sub-topics are re-researched on resume.
+            int maxRounds = session.getMaxRounds() != null ? session.getMaxRounds() : defaultMaxIterations;
             List<String> findingsBlocks = new ArrayList<>();
             List<String> failedSubTopics = new ArrayList<>();
             LinkedHashMap<String, String> aggregatedSources = new LinkedHashMap<>(); // normalized URL -> "Title — URL" line
@@ -379,7 +422,7 @@ public class ResearchOrchestratorService {
                         collectSourceInfo(reusedNote, aggregatedSources);
                         streamService.sendProgress(sessionId, "Resuming: reusing completed research on " + subTopic.title());
                     } else {
-                        ResearchRoundResult roundResult = researchOneSubTopic(handle, sessionId, subTopic, defaultMaxIterations);
+                        ResearchRoundResult roundResult = researchOneSubTopic(handle, sessionId, subTopic, maxRounds);
                         findingsBlocks.add(buildFindingBlock(i + 1, subTopic.title(), "COMPLETED", roundResult.note()));
                         aggregatedSources.putAll(roundResult.sourcesByUrl());
                         upsertSubTopicStep(session, i + 1, "COMPLETED", roundResult.note());
@@ -1270,18 +1313,19 @@ public class ResearchOrchestratorService {
     }
 
     /**
-     * Get historical research sessions with pagination.
+     * Get historical research sessions with pagination, scoped to one owner (plus legacy unowned rows).
+     * Filtering happens in the query, never after pagination, so page size and {@code totalElements}
+     * describe the filtered set (openspec/changes/session-ownership).
      */
-    public Page<ResearchSession> getHistoricalSessions(java.util.function.Predicate<ResearchSession> filter,
-                                                       org.springframework.data.domain.PageRequest pageable) {
-        return sessionRepo.findAllByOrderByCreatedAtDesc(pageable);
+    public Page<ResearchSession> getHistoricalSessions(String owner, org.springframework.data.domain.PageRequest pageable) {
+        return sessionRepo.findOwnedByOrderByCreatedAtDesc(owner, pageable);
     }
 
     /**
-     * Search historical sessions by topic (case-insensitive).
+     * Search historical sessions by topic (case-insensitive), scoped to one owner (plus legacy unowned rows).
      */
-    public Page<ResearchSession> searchByTopic(String query, org.springframework.data.domain.PageRequest pageable) {
-        return sessionRepo.findByTopicContainingIgnoreCase(query, pageable);
+    public Page<ResearchSession> searchByTopic(String query, String owner, org.springframework.data.domain.PageRequest pageable) {
+        return sessionRepo.findByTopicContainingIgnoreCaseAndOwner(query, owner, pageable);
     }
 
     /**
@@ -1382,8 +1426,26 @@ public class ResearchOrchestratorService {
             throw new IllegalStateException("Cannot delete a processing research session. Use the cancel endpoint instead.");
         }
         sessionRepo.deleteById(sessionId);
+        cascadeSessionArtifacts(sessionId);
         log.info("Deleted research session: {}", sessionId);
         return session;
+    }
+
+    /**
+     * Drop the session's LLM call records. They are keyed only by {@code sessionId} and are never read back
+     * once the session is gone, so keeping them would grow {@code llm_logs} forever (prompt + response text
+     * per model round). Failures are swallowed: deleting history must not fail because of log cleanup.
+     */
+    private void cascadeSessionArtifacts(UUID sessionId) {
+        try {
+            long removed = llmLogRepository.countBySessionId(sessionId);
+            llmLogRepository.deleteBySessionId(sessionId);
+            if (removed > 0) {
+                log.debug("Removed {} llm_logs records for deleted session {}", removed, sessionId);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to cascade llm_logs for session {}: {}", sessionId, e.getMessage());
+        }
     }
 
     /**
@@ -1416,6 +1478,7 @@ public class ResearchOrchestratorService {
         List<UUID> idsToDelete = sessions.stream().map(ResearchSession::getId).toList();
         if (!idsToDelete.isEmpty()) {
             sessionRepo.deleteAllById(idsToDelete); // embedded steps go away with their session document
+            idsToDelete.forEach(this::cascadeSessionArtifacts);
             log.info("Deleted {} research sessions in bulk: {}", idsToDelete.size(), idsToDelete);
         }
 

@@ -7,6 +7,7 @@ import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.model.enums.StepType;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.repository.ResearchSessionRepository;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -39,6 +40,7 @@ class ResearchOrchestratorServiceTest {
     @Mock private ResearchStreamingService streamService;
     @Mock private Executor researchTaskExecutor;
     @Mock private ResearchCancellationRegistry cancellationRegistry;
+    @Mock private LlmLogRepository llmLogRepository;
     @org.mockito.Spy private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
@@ -60,7 +62,7 @@ class ResearchOrchestratorServiceTest {
         });
 
         // When
-        ResearchSession session = service.createAndStart(request);
+        ResearchSession session = service.createAndStart(request, "alice");
 
         // Then: session is persisted with PROCESSING status
         assertThat(session).isNotNull();
@@ -163,9 +165,9 @@ class ResearchOrchestratorServiceTest {
         ResearchSession s1 = createMockSession(id1, "Topic A");
         ResearchSession s2 = createMockSession(id2, "Topic B");
         PageImpl<ResearchSession> page = new PageImpl<>(List.of(s2, s1), PageRequest.of(0, 20), 2);
-        when(sessionRepo.findAllByOrderByCreatedAtDesc(any(PageRequest.class))).thenReturn(page);
+        when(sessionRepo.findOwnedByOrderByCreatedAtDesc(any(String.class), any(PageRequest.class))).thenReturn(page);
 
-        var result = service.getHistoricalSessions(s -> true, PageRequest.of(0, 20));
+        var result = service.getHistoricalSessions("alice", PageRequest.of(0, 20));
 
         assertThat(result.getContent()).hasSize(2);
     }
@@ -175,9 +177,9 @@ class ResearchOrchestratorServiceTest {
         UUID id1 = UUID.randomUUID();
         ResearchSession s1 = createMockSession(id1, "Spring Boot testing");
         PageImpl<ResearchSession> page = new PageImpl<>(List.of(s1), PageRequest.of(0, 20), 1);
-        when(sessionRepo.findByTopicContainingIgnoreCase(eq("testing"), any(PageRequest.class))).thenReturn(page);
+        when(sessionRepo.findByTopicContainingIgnoreCaseAndOwner(eq("testing"), any(String.class), any(PageRequest.class))).thenReturn(page);
 
-        var result = service.searchByTopic("testing", PageRequest.of(0, 20));
+        var result = service.searchByTopic("testing", "alice", PageRequest.of(0, 20));
 
         assertThat(result.getContent()).hasSize(1);
     }

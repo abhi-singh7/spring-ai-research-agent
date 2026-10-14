@@ -6,6 +6,7 @@ import com.researchagent.model.dto.ResearchRoundNote.SourceRef;
 import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.repository.ResearchSessionRepository;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +47,7 @@ class ResearchFlowQualityTest {
     private ResearchSessionRepository sessionRepo;
     private ResearchStreamingService streamService;
     private ResearchCancellationRegistry cancellationRegistry;
+    private LlmLogRepository llmLogRepository;
     private ResearchOrchestratorService service;
     private ResearchSession session;
 
@@ -57,8 +59,9 @@ class ResearchFlowQualityTest {
         when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
 
         cancellationRegistry = new ResearchCancellationRegistry(); // the real registry — tests drive actual cancellations
+        llmLogRepository = mock(LlmLogRepository.class); // deleted sessions cascade their llm_logs records
         service = new ResearchOrchestratorService(llmGateway, new ObjectMapper(), sessionRepo,
-                streamService, (Runnable r) -> { /* unused by processResearchAsync */ }, cancellationRegistry);
+                streamService, (Runnable r) -> { /* unused by processResearchAsync */ }, cancellationRegistry, llmLogRepository);
 
         session = new ResearchSession();
         session.setId(UUID.randomUUID()); // manually-constructed sessions have no generated id

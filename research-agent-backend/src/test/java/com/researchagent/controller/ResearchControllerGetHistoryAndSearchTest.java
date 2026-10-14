@@ -90,7 +90,7 @@ class ResearchControllerGetHistoryAndSearchTest {
 
         PageImpl<ResearchSession> page = new PageImpl<>(List.of(s1, s2), org.springframework.data.domain.PageRequest.of(0, 20), 2);
 
-        when(orchestratorService.searchByTopic(any(), any(org.springframework.data.domain.PageRequest.class)))
+        when(orchestratorService.searchByTopic(any(), any(), any(org.springframework.data.domain.PageRequest.class)))
             .thenReturn(page);
 
         // When + Then: GET /history/search returns matching sessions
@@ -105,7 +105,7 @@ class ResearchControllerGetHistoryAndSearchTest {
         // Given: no sessions matching the query
         PageImpl<ResearchSession> emptyPage = new PageImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(0, 20), 0);
 
-        when(orchestratorService.searchByTopic(any(), any(org.springframework.data.domain.PageRequest.class)))
+        when(orchestratorService.searchByTopic(any(), any(), any(org.springframework.data.domain.PageRequest.class)))
             .thenReturn(emptyPage);
 
         mockMvc.perform(get("/api/research/history/search")
