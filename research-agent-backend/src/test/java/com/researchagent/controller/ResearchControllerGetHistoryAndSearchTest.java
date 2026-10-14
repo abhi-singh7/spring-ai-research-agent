@@ -67,6 +67,28 @@ class ResearchControllerGetHistoryAndSearchTest {
     }
 
     @Test
+    void getHistory_shouldNotShipReportTextInRows() throws Exception {
+        // Given: a completed session with a large report body (the entity still carries it)
+        UUID id = UUID.randomUUID();
+        LocalDateTime now = LocalDateTime.now();
+        ResearchSession withReport = createSession(id, "Topic A", now);
+        withReport.setStatus(com.researchagent.model.enums.ResearchStatus.COMPLETED);
+        withReport.setFinalReport("# Topic A\n" + "x".repeat(4000));
+
+        PageImpl<ResearchSession> page = new PageImpl<>(List.of(withReport), org.springframework.data.domain.PageRequest.of(0, 20), 1);
+        when(orchestratorService.getHistoricalSessions(any(), any(org.springframework.data.domain.PageRequest.class)))
+            .thenReturn(page);
+
+        // When + Then: the row is a summary — report text is not serialized, only reportAvailable
+        mockMvc.perform(get("/api/research/history"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.content").isArray())
+            .andExpect(jsonPath("$.content[0].topic").value("Topic A"))
+            .andExpect(jsonPath("$.content[0].reportAvailable").value(true))
+            .andExpect(jsonPath("$.content[0].finalReport").doesNotExist());
+    }
+
+    @Test
     void getHistory_shouldReturnEmptyPageWhenNoSessions() throws Exception {
         // Given: empty page in the repository
         PageImpl<ResearchSession> emptyPage = new PageImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(0, 20), 0);

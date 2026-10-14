@@ -5,6 +5,7 @@ import com.researchagent.model.dto.ResearchRequest;
 import com.researchagent.model.dto.ResearchResponse;
 import com.researchagent.model.dto.StepDTO;
 import com.researchagent.model.dto.ResearchSessionDetailDTO;
+import com.researchagent.model.dto.ResearchSessionSummaryDTO;
 import com.researchagent.model.entity.FollowUpExchange;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
@@ -15,8 +16,6 @@ import com.researchagent.security.CurrentUser;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.data.domain.Page;
@@ -191,23 +190,23 @@ public class ResearchController {
      * Get historical research sessions with pagination.
      */
     @GetMapping("/history")
-    public ResponseEntity<Page<ResearchSession>> getHistory(
+    public ResponseEntity<Page<ResearchSessionSummaryDTO>> getHistory(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return ResponseEntity.ok(orchestratorService.getHistoricalSessions(currentUsername(), pageable));
+        return ResponseEntity.ok(summarize(orchestratorService.getHistoricalSessions(currentUsername(), pageable)));
     }
 
     /**
      * Search historical sessions by topic.
      */
     @GetMapping("/history/search")
-    public ResponseEntity<Page<ResearchSession>> searchHistory(
+    public ResponseEntity<Page<ResearchSessionSummaryDTO>> searchHistory(
             @RequestParam String query,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return ResponseEntity.ok(orchestratorService.searchByTopic(query, currentUsername(), pageable));
+        return ResponseEntity.ok(summarize(orchestratorService.searchByTopic(query, currentUsername(), pageable)));
     }
 
     /**
@@ -380,5 +379,29 @@ public class ResearchController {
             sb.append(finding).append("\n---\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * History rows are summaries, never entities: {@code ResearchSession} carries the full {@code finalReport}
+     * and prompt, which used to be serialized into every row of every page while the list view renders neither.
+     * The page window, sort and total count are preserved by {@code Page#map}; only the row payload shrinks
+     * (openspec/changes/history-summary-payload).
+     */
+    private Page<ResearchSessionSummaryDTO> summarize(Page<ResearchSession> page) {
+        return page == null ? null : page.map(session -> toSummary(session));
+    }
+
+    private ResearchSessionSummaryDTO toSummary(ResearchSession session) {
+        ResearchSessionSummaryDTO summary = new ResearchSessionSummaryDTO();
+        summary.setId(session.getId());
+        summary.setTopic(session.getTopic());
+        summary.setStatus(session.getStatus().name());
+        summary.setOwner(session.getOwner());
+        summary.setCreatedAt(session.getCreatedAt());
+        summary.setUpdatedAt(session.getUpdatedAt());
+        summary.setCompletedAt(session.getCompletedAt());
+        summary.setReportAvailable(session.getFinalReport() != null && !session.getFinalReport().isEmpty());
+        summary.setStepCount(session.getSteps() == null ? 0 : session.getSteps().size());
+        return summary;
     }
 }
