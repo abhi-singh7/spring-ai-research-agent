@@ -357,6 +357,7 @@ export class ResearchService {
       SEARCH: 'Search',
       READ: 'Read URL',
       SYNTHESIS: 'Synthesis',
+      QUALITY_EVAL: 'Quality Check',
       FINAL_REPORT: 'Generating Report'
     };
     const baseName = type ? nameMap[type] || type : '';
