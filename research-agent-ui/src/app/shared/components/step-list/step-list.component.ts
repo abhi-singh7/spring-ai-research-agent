@@ -1,11 +1,13 @@
 import { Component, input, ViewEncapsulation } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MarkdownModule } from 'ngx-markdown';
 
 @Component({
   selector: 'step-list',
   standalone: true,
-  imports: [MatCardModule, MarkdownModule],
+  imports: [MatCardModule, MatIconModule, MatProgressSpinnerModule, MarkdownModule],
   template: `
     <mat-card class="steps-card">
       <mat-card-header><mat-card-title>Research Steps</mat-card-title></mat-card-header>
@@ -16,18 +18,18 @@ import { MarkdownModule } from 'ngx-markdown';
               <li class="step-item" [class.active]="activeStepIndex() === step.stepNumber - 1">
                 <span class="step-number">{{ step.stepNumber }}</span>
 
-                <!-- Status icon -->
+                <!-- Status: Material iconography, spinner for the live step -->
                 @if (step.status === 'COMPLETED') {
-                  <span class="step-icon completed">&#10003;</span>
+                  <mat-icon class="step-completed">check_circle</mat-icon>
                 }
                 @if (step.status === 'IN_PROGRESS') {
-                  <span class="step-icon running">&#8635;</span>
+                  <mat-progress-spinner class="step-running" mode="indeterminate" diameter="18" strokeWidth="2" />
                 }
                 @if (step.status === 'FAILED') {
-                  <span class="step-icon failed">&#10007;</span>
+                  <mat-icon class="step-failed">error</mat-icon>
                 }
                 @if (step.status === 'PENDING') {
-                  <span class="step-icon pending">&#9675;</span>
+                  <mat-icon class="step-pending">radio_button</mat-icon>
                 }
 
                 <!-- Step name -->
@@ -53,23 +55,51 @@ import { MarkdownModule } from 'ngx-markdown';
   styles: [`
     .steps-card { margin-bottom: 16px; }
     .step-list { list-style: none; padding-left: 0; margin: 0; }
-    .step-item { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid #e0e0e0; }
-    .step-number { min-width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; background: #f0f0f0; }
-    .active .step-number { background: var(--mat-primary-color); color: white; }
-    .step-icon { width: 24px; text-align: center; }
-    .completed { color: green; }
-    .running { animation: spin 1s linear infinite; }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    .failed { color: red; }
-    .pending { opacity: 0.5; }
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--rp-outline);
+    }
+    .step-number {
+      min-width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      background: var(--rp-brand-08);
+      color: var(--rp-on-surface);
+    }
+    .active .step-number {
+      background: var(--rp-primary);
+      color: var(--rp-on-primary);
+    }
+    mat-icon {
+      width: 18px;
+      height: 18px;
+      font-size: 18px;
+      line-height: 18px;
+    }
+    .step-completed { color: var(--rp-success); }
+    .step-failed { color: var(--rp-error); }
+    .step-pending { color: var(--rp-outline); }
+    .step-running { margin: 3px; }
     .step-name { font-weight: 500; }
-    .step-description { margin-top: 4px; padding-left: 40px; color: #616161; white-space: pre-wrap; }
+    .step-description {
+      margin-top: 4px;
+      padding-left: 40px;
+      color: var(--rp-on-surface-variant);
+      white-space: pre-wrap;
+    }
     /* Constrain code blocks from overflowing the step description area */
     :host ::ng-deep markdown,
     :host ::ng-deep .markdown-body { max-width: 100% !important; overflow-x: hidden !important; }
     :host ::ng-deep pre,
     :host ::ng-deep code { white-space: pre-wrap !important; word-wrap: break-word !important; max-width: 100% !important; overflow-x: hidden !important; }
-    .empty-state { text-align: center; color: #999; padding: 20px; }
+    .empty-state { text-align: center; color: var(--rp-on-surface-variant); padding: 20px; }
   `]
 })
 export class StepListComponent {

@@ -29,43 +29,47 @@ import { ResearchService } from './core/services/research.service';
     .app-title { font-weight: bold; }
     .spacer { flex: 1; }
 
+    /* The nav links are Material text buttons (a mat-button), so their chrome
+       comes from the button's own tokens — and hover is Material's persistent
+       state layer (brand tinted), not a hand-drawn background-color. */
     mat-toolbar a[mat-button],
     mat-toolbar a[routerLinkActive] {
-      color: inherit !important;
-      text-decoration: none !important;
-      border-radius: 8px;
+      --mdc-text-button-label-text-color: var(--rp-on-surface);
+      --mdc-text-button-container-shape: 8px;
+      --mat-text-button-state-layer-color: var(--rp-primary);
+      --mat-text-button-hover-state-layer-opacity: 0.12;
+      text-decoration: none;
       padding: 0 16px;
       font-weight: 500;
-      transition: all 0.2s ease;
     }
 
-    mat-toolbar a[mat-button]:hover,
-    mat-toolbar a[routerLinkActive]:hover {
-      background-color: rgba(99, 102, 241, 0.1);
+    /* Active route: the same token, one step louder. */
+    mat-toolbar a.active-link {
+      --mdc-text-button-label-text-color: var(--rp-primary);
+      font-weight: 700;
     }
-
-    .active-link { font-weight: 700; color: #6366f1 !important; }
 
     mat-toolbar a[mat-button] + a[mat-button] { margin-left: 8px; }
 
+    /* Username pill in the toolbar — a plain span, so it is painted from the
+       same container/on-container token pair the status chips use. */
     .user-chip {
       margin-left: 12px;
       padding: 4px 12px;
       border-radius: 999px;
-      background-color: rgba(99, 102, 241, 0.12);
-      color: #6366f1 !important;
+      background-color: var(--rp-primary-container);
+      color: var(--rp-on-primary-container);
       font-weight: 600;
       font-size: 0.85rem;
     }
 
+    /* Material text button: hover is its state layer, tinted to the brand. */
     .logout-btn {
       margin-left: 8px;
-      border-radius: 8px;
+      --mdc-text-button-container-shape: 8px;
+      --mat-text-button-state-layer-color: var(--rp-primary);
+      --mat-text-button-hover-state-layer-opacity: 0.12;
       font-weight: 500;
-    }
-
-    .logout-btn:hover {
-      background-color: rgba(99, 102, 241, 0.1);
     }
   `]
 })

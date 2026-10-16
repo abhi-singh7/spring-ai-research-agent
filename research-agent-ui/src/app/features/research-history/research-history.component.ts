@@ -9,6 +9,10 @@ import { ResearchHistoryService } from '../../core/services/research-history.ser
 import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { MatSnackBarModule, MatSnackBar } from '@angular/material/snack-bar';
 import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatRippleModule } from '@angular/material/core';
+import { MatBadgeModule } from '@angular/material/badge';
 
 /**
  * Reusable delete confirmation dialog.
@@ -31,19 +35,18 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
       }
     </mat-dialog-content>
     <mat-dialog-actions align="end" class="delete-confirm-actions">
-      <button mat-stroked-button color="primary" (click)="dialogRef.close(false)">Cancel</button>
-      <button mat-raised-button color="warn" (click)="dialogRef.close(true)">Delete Permanently</button>
+      <button mat-stroked-button class="mat-primary" (click)="dialogRef.close(false)">Cancel</button>
+      <button mat-raised-button class="mat-warn" (click)="dialogRef.close(true)">Delete Permanently</button>
     </mat-dialog-actions>
   `,
   styles: [`
     .delete-confirm-content { min-width: 300px; max-width: 500px; }
-    .topic-list { margin-top: 12px; padding-left: 8px; border-left: 2px solid #ccc; }
-    @media (prefers-color-scheme: dark) { .topic-list { border-left-color: #555; } }
+    .topic-list { margin-top: 12px; padding-left: 8px; border-left: 2px solid var(--rp-outline); }
     .topic-item { display: block !important; font-size: 0.85rem !important; font-weight: 600 !important; padding: 2px 0 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 400px !important; }
     /* Use Material M3's dialog supporting-text-color variable — adapts automatically to whichever theme the dialog is using (light or dark) */
     .delete-confirm-content .topic-list .topic-item,
     .mdc-dialog__content .delete-confirm-content .topic-item {
-      color: var(--mdc-dialog-supporting-text-color, #1a1a2e) !important;
+      color: var(--mdc-dialog-supporting-text-color) !important;
       padding-left: 6px !important;
     }
     .mat-dialog-container { border-radius: 12px !important; padding: 24px !important; overflow: visible !important; }
@@ -76,6 +79,10 @@ interface DeleteConfirmData {
     MatDialogModule,
     MatSnackBarModule,
     MatCheckboxModule,
+    MatChipsModule,
+    MatTooltipModule,
+    MatBadgeModule,
+    MatRippleModule,
   ],
   template: `
     <div class="research-history-container">
@@ -98,18 +105,19 @@ interface DeleteConfirmData {
       @if (sessions().length > 0) {
         <div class="action-toolbar fade-in">
            @if (!inSelectionMode && !hasActualSelections()) {
-             <button mat-icon-button color="primary" (click)="enterSelectionMode()" [attr.aria-label]="'Delete multiple items'">
+             <button mat-icon-button class="mat-primary" (click)="enterSelectionMode()" [attr.aria-label]="'Delete multiple items'">
                <mat-icon>delete_sweep</mat-icon>
              </button>
            }
 
           @if (inSelectionMode && hasActualSelections()) {
-            <span class="selection-count">{{ selectionCount() }} selected</span>
-            <button mat-stroked-button color="primary" class="select-all-btn" (click)="toggleSelectAll()">
+            <button mat-stroked-button class="mat-primary select-all-btn" (click)="toggleSelectAll()">
               {{ isCurrentPageSelected() ? 'Deselect All' : 'Select All' }}
             </button>
-            <button mat-stroked-button color="warn" [disabled]="!hasActualSelections()"
-                    class="delete-btn" (click)="onBulkDelete()">
+            <button mat-stroked-button class="mat-warn delete-btn" [disabled]="!hasActualSelections()"
+                    [matBadge]="selectionCount()" matBadgeSize="small"
+                    [matBadgeDescription]="selectionCount() + ' sessions selected'"
+                    (click)="onBulkDelete()">
               Delete Selected
             </button>
           }
@@ -117,7 +125,7 @@ interface DeleteConfirmData {
           <!-- Exit selection mode — always shown when in selection mode so user can cancel -->
           @if (inSelectionMode) {
             <span style="flex-shrink: 0;">&nbsp;</span>
-            <button mat-stroked-button color="primary" class="cancel-selection-btn" (click)="exitSelectionMode()">Cancel</button>
+            <button mat-stroked-button class="mat-primary cancel-selection-btn" (click)="exitSelectionMode()">Cancel</button>
           }
         </div>
       }
@@ -130,17 +138,20 @@ interface DeleteConfirmData {
             <div class="history-item-wrapper fade-in" style="cursor: pointer;">
 
               <mat-card class="item-card" [routerLink]="['/research/history', item.id]">
+                <!-- Material ripple: the card is a clickable surface, so press
+                     feedback comes from MatRipple, not a hand-drawn :hover. -->
+                <div matRipple class="item-ripple"></div>
                 <mat-card-content class="card-body">
                   <span class="topic">{{ item.topic }}</span>
                   <div class="card-right-side">
-                    <span class="status-chip"
+                    <mat-chip class="status-chip" [matTooltip]="statusHint(item.status)"
                           [class.pending]="item.status === 'PENDING'"
                           [class.processing]="item.status === 'PROCESSING'"
                           [class.completed]="item.status === 'COMPLETED'"
                           [class.failed]="item.status === 'FAILED'"
                           [class.cancelled]="item.status === 'CANCELLED'">
                       {{ getStatusLabel(item.status) }}
-                    </span>
+                    </mat-chip>
 
                     @if (item.createdAt || item.completedAt) {
                       <div class="card-date-row">
@@ -157,7 +168,7 @@ interface DeleteConfirmData {
               </mat-card>
 
               <!-- Delete button — outside the navigable card area so [routerLink] doesn't intercept its clicks -->
-              <button mat-icon-button color="warn" class="delete-btn-outside normal-view-delete"
+              <button mat-icon-button class="mat-warn delete-btn-outside normal-view-delete"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
                 <mat-icon>delete_forever</mat-icon>
@@ -184,17 +195,18 @@ interface DeleteConfirmData {
 
             <div class="selection-card-delete-area">
               <mat-card class="item-card">
+                <div matRipple class="item-ripple"></div>
                 <mat-card-content class="card-body">
                   <span class="topic">{{ item.topic }}</span>
                   <div class="card-right-side">
-                    <span class="status-chip"
+                    <mat-chip class="status-chip" [matTooltip]="statusHint(item.status)"
                           [class.pending]="item.status === 'PENDING'"
                           [class.processing]="item.status === 'PROCESSING'"
                           [class.completed]="item.status === 'COMPLETED'"
                           [class.failed]="item.status === 'FAILED'"
                           [class.cancelled]="item.status === 'CANCELLED'">
                         {{ getStatusLabel(item.status) }}
-                      </span>
+                      </mat-chip>
 
                     @if (item.createdAt || item.completedAt) {
                       <div class="card-date-row">
@@ -211,7 +223,7 @@ interface DeleteConfirmData {
               </mat-card>
 
             <!-- Delete button on the right --></div>
-              <button mat-icon-button color="warn" class="delete-btn-outside"
+              <button mat-icon-button class="mat-warn delete-btn-outside"
                       (click)="onDeleteSingle(item, $event)"
                       [attr.aria-label]="'Delete research session: ' + item.topic">
                 <mat-icon>delete_forever</mat-icon>
@@ -226,7 +238,7 @@ interface DeleteConfirmData {
       @if (sessions().length === 0 && !hasSelection()) {
         <div class="empty-state fade-in">
           <p>No research history found.</p>
-          <a routerLink="/" mat-raised-button color="primary">Start New Research</a>
+          <a routerLink="/" mat-raised-button class="mat-primary">Start New Research</a>
         </div>
       }
 
@@ -246,8 +258,8 @@ interface DeleteConfirmData {
 
     /* ---- Page header ---- */
     .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
-    .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; color: #0f0f23 !important; }
-    .session-count { font-size: 0.9rem; color: #1a1a2e !important; font-weight: 400; }
+    .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; color: var(--rp-on-surface) !important; }
+    .session-count { font-size: 0.9rem; color: var(--rp-on-surface-variant) !important; font-weight: 400; }
 
     /* ---- Search bar ---- */
     .search-bar { width: 100%; margin-bottom: 24px; }
@@ -255,14 +267,11 @@ interface DeleteConfirmData {
     /* ---- Action toolbar ---- */
     .action-toolbar {
       display: flex; align-items: center; gap: 16px; padding: 12px 18px;
-      background-color: #f5f5f5; border-radius: 8px; margin-bottom: 16px; min-height: 44px;
+      background-color: var(--rp-info-soft); border-radius: 8px; margin-bottom: 16px; min-height: 44px;
     }
-    .selection-count { font-size: 0.95rem; font-weight: 500; color: #1a1a2e !important; flex-shrink: 0; }
-    @media (prefers-color-scheme: dark) { .selection-count { color: #eee; } }
-    .delete-btn { padding: 0 24px; min-width: auto; font-weight: 500; letter-spacing: 0.3px; transition: all 0.2s ease; }
+    .delete-btn { padding: 0 24px; min-width: auto; font-weight: 500; letter-spacing: 0.3px; }
     .cancel-selection-btn {
       margin-left: 8px !important;
-      color: var(--md-sys-color-primary, #6750a0) !important;
     }
 
     /* ---- Session list ---- */
@@ -275,8 +284,27 @@ interface DeleteConfirmData {
     .history-item-wrapper mat-card {
       flex: 1 1 auto; min-width: 0;
     }
-    .item-card { border-radius: 12px !important; overflow: hidden; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); cursor: pointer; position: relative; }
-    .item-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12); }
+    .item-card {
+      /* Material card API: shape and elevation are the card's own tokens. */
+      --mdc-elevated-card-container-shape: 12px;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-1);
+      --mat-ripple-color: var(--rp-primary);
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform var(--rp-motion-standard) var(--rp-easing-standard);
+    }
+    .item-card:hover {
+      /* Hover = one elevation step up, on Material's motion curve. */
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-4);
+      transform: translateY(-2px);
+    }
+    /* The ripple fills the card; later siblings stay hit-testable above it. */
+    .item-ripple {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+    }
 
     /* ---- Selection view row layout (checkbox + topic left-aligned, status chip + dates right-aligned) ---- */
     .delete-btn-outside {
@@ -286,24 +314,21 @@ interface DeleteConfirmData {
       justify-content: center !important;
       width: 48px !important;
       height: 48px !important;
-      border-radius: 50% !important;
-      transition: all 0.2s ease !important;
-    }
-    .delete-btn-outside:hover {
-      background-color: rgba(239, 68, 68, 0.1) !important;
-      transform: scale(1.05) !important;
+      /* Material icon-button API: state-layer size + brand-tinted hover. */
+      --mdc-icon-button-state-layer-size: 48px;
+      --mat-icon-button-hover-state-layer-opacity: 0.16;
     }
 
     /* ---- Normal view card ---- */
     a.history-item { text-decoration: none; color: inherit; }
 
     /* ---- Selected card styling (normal view) ---- */
-    .item-card.selected { border-left: 3px solid #6750a0 !important; background-color: rgba(103, 80, 160, 0.05) !important; }
-    @media (prefers-color-scheme: dark) { .item-card.selected { background-color: rgba(103, 80, 160, 0.1) !important; } }
+    .item-card.selected {
+      --mdc-elevated-card-container-color: var(--rp-info-soft);
+    }
 
     /* ---- Selected row styling (selection mode — no card involved) ---- */
-    .history-item-wrapper.selected { background-color: rgba(103, 80, 160, 0.05) !important; border-radius: 8px; }
-    @media (prefers-color-scheme: dark) { .history-item-wrapper.selected { background-color: rgba(103, 80, 160, 0.1) !important; } }
+    .history-item-wrapper.selected { background-color: var(--rp-info-soft) !important; border-radius: 8px; }
 
     /* ---- Card body (topic left, status+dates right) ---- */
     .card-body { display: flex !important; align-items: center; justify-content: space-between; gap: 16px; min-height: 0; padding-right: 4px; }
@@ -311,28 +336,24 @@ interface DeleteConfirmData {
 
 
     /* ---- Topic text ---- */
-    .topic { font-weight: 600; font-size: 0.95rem; color: #0f0f23 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .topic { font-weight: 600; font-size: 0.95rem; color: var(--rp-on-surface) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
     /* ---- Selection row (checkbox + topic) ---- */
     .selection-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px 0 14px; }
 
-    /* ---- Status chip ---- */
-    .status-chip { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.3px; flex-shrink: 0; transition: all 0.3s ease; }
-    .pending { background-color: #fff3e0; color: #ef6c00; }
-    .processing { background-color: #e3f2fd; color: #1565c0; }
-    .completed { background-color: #e8f5e9; color: #2e7d32; }
-    .failed { background-color: #ffebee; color: #c62828; }
-    .cancelled { background-color: #fafafa; color: #424242; border: 1px solid #bdbdbd; }
-
-    @media (prefers-color-scheme: dark) {
-      .page-header h2 { color: #e0e0e0; }
-      .topic { color: #e0e0e0; }
-      .pending { background-color: rgba(255, 183, 77, 0.2); color: #ffb74d; }
-      .processing { background-color: rgba(66, 165, 245, 0.2); color: #42a5f5; }
-      .completed { background-color: rgba(102, 187, 106, 0.2); color: #66bb6a; }
-      .failed { background-color: rgba(239, 83, 80, 0.2); color: #ef5350; }
-      .cancelled { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
+    /* ---- Status chip (Material mat-chip; colors set through the chip's own tokens) ---- */
+    .status-chip {
+      --mdc-chip-container-height: 28px;
+      --mdc-chip-container-shape-radius: 14px;
+      --mdc-chip-label-text-size: 0.75rem;
+      --mdc-chip-label-text-weight: 500;
+      flex-shrink: 0;
     }
+    .status-chip.pending { --mdc-chip-elevated-container-color: var(--rp-warning-container); --mdc-chip-label-text-color: var(--rp-on-warning-container); }
+    .status-chip.processing { --mdc-chip-elevated-container-color: var(--rp-primary-container); --mdc-chip-label-text-color: var(--rp-on-primary-container); }
+    .status-chip.completed { --mdc-chip-elevated-container-color: var(--rp-success-container); --mdc-chip-label-text-color: var(--rp-on-success-container); }
+    .status-chip.failed { --mdc-chip-elevated-container-color: var(--rp-error-container); --mdc-chip-label-text-color: var(--rp-on-error-container); }
+    .status-chip.cancelled { --mdc-chip-elevated-container-color: var(--rp-surface); --mdc-chip-label-text-color: var(--rp-on-surface-variant); }
 
         /* ---- Card date row (inside card-right-side column, aligned with status chip) ---- */
     .card-date-row {
@@ -350,23 +371,15 @@ interface DeleteConfirmData {
     }
 
     /* ---- Card date info text ---- */
-    .date-info, .completed-info { font-size: 0.8rem; color: #1a1a2e !important; white-space: nowrap; max-width: 300px; }
-    @media (prefers-color-scheme: dark) {
-      .date-info, .completed-info { color: #bdbdbd !important; }
-    }
+    .date-info, .completed-info { font-size: 0.8rem; color: var(--rp-on-surface-variant) !important; white-space: nowrap; max-width: 300px; }
 
     /* ---- Empty state ---- */
-    .empty-state { text-align: center; padding: 48px 24px; color: #1a1a2e !important; }
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--rp-on-surface-variant) !important; }
     .empty-state p { margin-bottom: 16px; font-size: 1rem; }
 
     /* ---- Pagination ---- */
     .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; padding: 16px 0; }
-    .page-info { font-size: 0.85rem; color: #1a1a2e !important; font-weight: 500; min-width: 120px; text-align: center; }
-
-    @media (prefers-color-scheme: dark) {
-      .empty-state p { color: #9e9e9e; }
-      .page-info { color: #bdbdbd; }
-    }
+    .page-info { font-size: 0.85rem; color: var(--rp-on-surface-variant) !important; font-weight: 500; min-width: 120px; text-align: center; }
 
     /* ---- Fade-in animation (CSS-only, no Angular animation module dependency) ---- */
     .fade-in {
@@ -380,7 +393,6 @@ interface DeleteConfirmData {
     /* ---- Session checkbox (Material M3) ---- */
     .session-checkbox::ng-deep .mat-mdc-checkbox-mat-persistent { position: relative !important; }
     .session-checkbox { margin-right: 8px !important; flex-shrink: 0; display: inline-flex !important; align-items: center !important; vertical-align: middle !important; }
-    @media (prefers-color-scheme: dark) { .session-checkbox { color: #e0a5ff !important; } }
 
     /* ---- Selection mode checkbox (outside history-item-wrapper — needs its own spacing) ---- */
     .selection-mode-checkbox { margin-left: 24px !important; margin-right: 16px !important; flex-shrink: 0; display: inline-flex !important; align-items: center !important; }
@@ -388,12 +400,6 @@ interface DeleteConfirmData {
     /* ---- Card + delete row inside selection mode (horizontal layout) ---- */
     .selection-card-delete-area {
       display: flex !important; align-items: center; gap: 8px !important; width: 100%; flex: 1; min-width: 0;
-    }
-
-    /* ---- Dark mode adjustments ---- */
-    @media (prefers-color-scheme: dark) {
-      .page-header h2 { color: #e0e0e0; }
-      .topic { color: #e0e0e0; }
     }
   `]
 })
@@ -446,6 +452,18 @@ export class ResearchHistoryComponent implements OnInit {
       PENDING: 'Pending', PROCESSING: 'Processing...', COMPLETED: 'Completed', FAILED: 'Failed', CANCELLED: 'Cancelled'
     };
     return labels[status] || status;
+  }
+
+  /** Hover affordance for the status chip: what the user can actually do with this session. */
+  statusHint(status: string): string {
+    const hints: Record<string, string> = {
+      PENDING: 'Queued — the pipeline has not started yet',
+      PROCESSING: 'Open this session to watch its steps and the live report',
+      COMPLETED: 'Report available',
+      FAILED: 'Failed — open it to resume the research',
+      CANCELLED: 'Cancelled — open it to resume the research'
+    };
+    return hints[status] || status;
   }
 
   formatDateTime(dateStr: string): string {

@@ -44,7 +44,7 @@ const LS_SERIF = 'ra.report.serif';
             <button mat-icon-button [disabled]="fontSize() === 'lg'" (click)="incFont()" aria-label="Increase font size">
               <mat-icon>add_circle</mat-icon>
             </button>
-            <button mat-icon-button [class.active]="serif()" (click)="toggleSerif()" title="Toggle serif font" aria-label="Toggle serif font">
+            <button mat-icon-button [class.mat-primary]="serif()" (click)="toggleSerif()" title="Toggle serif font" aria-label="Toggle serif font">
               <mat-icon>font_download</mat-icon>
             </button>
             <button mat-icon-button (click)="print()" title="Print / Save as PDF" aria-label="Print report">
@@ -68,8 +68,8 @@ const LS_SERIF = 'ra.report.serif';
     /* Reading progress bar */
     .reading-progress {
       position: fixed; top: 0; left: 0; height: 3px; width: 0;
-      background: #6366f1; z-index: 2000;
-      transition: width 0.15s linear;
+      background: var(--rp-primary); z-index: 2000;
+      transition: width var(--rp-motion-fast) var(--rp-easing-standard);
       opacity: 0;
     }
     .reading-progress.visible { opacity: 1; }
@@ -78,44 +78,41 @@ const LS_SERIF = 'ra.report.serif';
     .report-toc { font-size: 0.85rem; }
     .toc-header {
       font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;
-      font-size: 0.72rem; color: #8a8f98; margin-bottom: 8px; padding: 0 10px;
+      font-size: 0.72rem; color: var(--rp-on-surface-variant); margin-bottom: 8px; padding: 0 10px;
     }
-    .toc-list { list-style: none; margin: 0; padding: 0; border-left: 2px solid rgba(99, 102, 241, 0.15); }
+    .toc-list { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--rp-brand-16); }
     .toc-list li { margin: 0; }
     .toc-list a {
-      display: block; padding: 5px 10px; color: #57606a; text-decoration: none;
+      display: block; padding: 5px 10px; color: var(--rp-on-surface-variant); text-decoration: none;
       border-left: 2px solid transparent; margin-left: -2px;
-      transition: color 0.15s ease, background-color 0.15s ease;
+      transition: color var(--rp-motion-fast) var(--rp-easing-standard), background-color var(--rp-motion-fast) var(--rp-easing-standard);
     }
-    .toc-list a:hover { color: #4f46e5; background: rgba(99, 102, 241, 0.06); }
-    .toc-list li.active > a { color: #4f46e5; font-weight: 600; border-left-color: #6366f1; background: rgba(99, 102, 241, 0.16); }
+    .toc-list a:hover { color: var(--rp-primary); background: var(--rp-brand-04); }
+    .toc-list li.active > a { color: var(--rp-primary); font-weight: 600; border-left-color: var(--rp-primary); background: var(--rp-brand-16); }
     .toc-list li.sub a { padding-left: 22px; }
 
     /* Card + toolbar */
-    .report-card { border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
+    .report-card {
+      --mdc-elevated-card-container-shape: 12px;
+      overflow: hidden;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-1);
+    }
     .report-card mat-card-header { display: flex; align-items: center; gap: 8px; padding: 16px 24px 8px; }
-    .report-card mat-card-title { flex: 1; font-weight: 600; color: #0f0f23; }
+    .report-card mat-card-title { flex: 1; font-weight: 600; color: var(--rp-on-surface); }
     .report-toolbar { display: flex; align-items: center; gap: 2px; }
-    .report-toolbar button { width: 34px; height: 34px; color: #57606a; }
-    .report-toolbar button.active { color: #4f46e5; background: rgba(99, 102, 241, 0.1); border-radius: 50%; }
+    /* Material icon-button tokens (the hand-drawn .active pill is gone — the
+       serif toggle carries class="mat-primary" when on). */
+    .report-toolbar button {
+      width: 34px; height: 34px;
+      --mdc-icon-button-icon-color: var(--rp-on-surface-variant);
+      --mdc-icon-button-state-layer-size: 34px;
+    }
     .report-content { padding: 8px 24px 28px; }
 
     /* Wide viewports: sticky TOC sidebar */
     @media (min-width: 1100px) {
       .report-shell { grid-template-columns: 250px minmax(0, 1fr); }
       .report-toc { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
-    }
-
-    /* Dark mode */
-    @media (prefers-color-scheme: dark) {
-      .toc-header { color: #8b919c; }
-      .toc-list { border-left-color: rgba(129, 140, 248, 0.25); }
-      .toc-list a { color: #aab2bd; }
-      .toc-list a:hover { color: #a5b4fc; background: rgba(129, 140, 248, 0.1); }
-      .toc-list li.active > a { color: #c7d2fe; border-left-color: #818cf8; background: rgba(129, 140, 248, 0.18); }
-      .report-card mat-card-title { color: #f0f2f5; }
-      .report-toolbar button { color: #aab2bd; }
-      .reading-progress { background: #818cf8; }
     }
   `]
 })

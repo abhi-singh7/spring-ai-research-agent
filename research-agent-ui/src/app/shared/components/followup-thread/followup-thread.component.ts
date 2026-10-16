@@ -64,7 +64,7 @@ import { FollowUpExchange } from '../../../core/models/research.model';
             @if (isLoading()) {
               <mat-spinner diameter="20"></mat-spinner>
             }
-            <button mat-raised-button color="primary" type="submit" [disabled]="!question.trim() || isLoading()">
+            <button mat-raised-button class="mat-primary" type="submit" [disabled]="!question.trim() || isLoading()">
               <mat-icon>send</mat-icon> Ask
             </button>
           </div>
@@ -74,44 +74,48 @@ import { FollowUpExchange } from '../../../core/models/research.model';
   `,
   styles: [`
     /* Like the step-list / session-info cards on the history page: a plain themed
-       (white) mat-card in BOTH light and dark OS modes — no forced dark surface,
-       so the themed dark text (title, input, label) is always readable. */
-    .followup-thread-card { border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
+       mat-card — its surface, shape and elevation follow the active scheme in both
+       light and dark OS modes (Material tokens, no hand-drawn shadow). */
+    .followup-thread-card {
+      --mdc-elevated-card-container-shape: 12px;
+      overflow: hidden;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-1);
+    }
     .followup-thread-card mat-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-    .followup-thread-card mat-card-title mat-icon { color: #6366f1; }
+    .followup-thread-card mat-card-title mat-icon { color: var(--rp-primary); }
 
     .thread { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; min-height: 24px; }
-    .empty-thread { color: #9e9e9e; font-size: 0.9rem; margin: 8px 0; }
+    .empty-thread { color: var(--rp-on-surface-variant); font-size: 0.9rem; margin: 8px 0; }
 
     .message-row { display: flex; }
     .message-row.user { justify-content: flex-end; }
     .message-row.assistant { justify-content: flex-start; }
 
     .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 0.92rem; line-height: 1.5; }
-    .user-bubble { background-color: #6366f1; color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
-    .assistant-bubble { background-color: #f1f3f9; color: #24292f; border-bottom-left-radius: 4px; }
+    .user-bubble { background-color: var(--rp-primary); color: var(--rp-on-primary); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+    .assistant-bubble { background-color: var(--rp-surface-lowest); color: var(--rp-on-surface); border-bottom-left-radius: 4px; }
     .assistant-bubble.waiting { display: flex; align-items: center; justify-content: center; padding: 12px; }
 
-    /* Answer markdown: fixed dark-on-light typography, readable on the light bubble in
-       both OS modes. Deliberately NOT .report-doc — that class flips to light text in
-       OS dark mode and would vanish on the light bubble. */
-    .assistant-bubble .followup-answer-md { line-height: 1.6; color: #24292f; }
+    /* Answer markdown: themed typography that flips with the scheme, readable on the
+       assistant bubble (which is itself a themed surface). Deliberately NOT .report-doc —
+       that class carries document-scale spacing. */
+    .assistant-bubble .followup-answer-md { line-height: 1.6; color: var(--rp-on-surface); }
     .assistant-bubble .followup-answer-md > :first-child { margin-top: 0; }
     .assistant-bubble .followup-answer-md > :last-child { margin-bottom: 0; }
     .assistant-bubble .followup-answer-md p { margin: 0 0 0.7em; }
-    .assistant-bubble .followup-answer-md :is(h1, h2, h3, h4) { color: #0f0f23; font-size: 1.05em; margin: 0.8em 0 0.4em; }
+    .assistant-bubble .followup-answer-md :is(h1, h2, h3, h4) { color: var(--rp-on-surface); font-size: 1.05em; margin: 0.8em 0 0.4em; }
     .assistant-bubble .followup-answer-md ul,
     .assistant-bubble .followup-answer-md ol { padding-left: 1.5em; margin: 0.4em 0 0.7em; }
-    .assistant-bubble .followup-answer-md a { color: #4f46e5; word-break: break-word; }
-    .assistant-bubble .followup-answer-md code { background: rgba(99, 102, 241, 0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
-    .assistant-bubble .followup-answer-md pre { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; padding: 10px 12px; margin: 0.7em 0; overflow-x: auto; }
+    .assistant-bubble .followup-answer-md a { color: var(--rp-primary); word-break: break-word; }
+    .assistant-bubble .followup-answer-md code { background: var(--rp-brand-08); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+    .assistant-bubble .followup-answer-md pre { background: var(--rp-surface); border: 1px solid var(--rp-outline-variant); border-radius: 8px; padding: 10px 12px; margin: 0.7em 0; overflow-x: auto; }
     .assistant-bubble .followup-answer-md pre code { background: none; padding: 0; }
 
     .composer { display: flex; flex-direction: column; gap: 4px; }
     .full-width { width: 100%; }
     .composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 
-    .thread-error { color: #c62828; font-size: 0.85rem; margin: 8px 0 0; }
+    .thread-error { color: var(--rp-error); font-size: 0.85rem; margin: 8px 0 0; }
   `]
 })
 export class FollowUpThreadComponent implements AfterViewInit {

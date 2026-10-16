@@ -5,6 +5,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { Router, ActivatedRoute } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { AuthService } from '../../core/services/auth.service';
@@ -23,7 +24,8 @@ import { AuthService } from '../../core/services/auth.service';
     MatCardModule,
     MatFormFieldModule,
     MatInputModule,
-    MatButtonModule
+    MatButtonModule,
+    MatProgressSpinnerModule
   ],
   animations: [
     trigger('fadeIn', [
@@ -83,13 +85,12 @@ import { AuthService } from '../../core/services/auth.service';
 
             <button
               mat-raised-button
-              color="primary"
               type="submit"
               [disabled]="!form.valid || isLoading()"
-              class="submit-btn"
+              class="mat-primary submit-btn"
             >
               @if (isLoading()) {
-                <span class="spinner"></span>
+                <mat-progress-spinner class="btn-spinner" mode="indeterminate" diameter="18" strokeWidth="2" />
                 {{ mode() === 'login' ? 'Signing in...' : 'Creating account...' }}
               } @else {
                 {{ mode() === 'login' ? 'Sign in' : 'Create account' }}
@@ -121,18 +122,19 @@ import { AuthService } from '../../core/services/auth.service';
     .login-card {
       width: 100%;
       max-width: 440px;
-      border-radius: 16px !important;
-      box-shadow: 0 4px 24px rgba(99, 102, 241, 0.08) !important;
-      transition: box-shadow 0.3s ease;
+      /* Material card API — shape + elevation tokens (scheme-aware shadows, no
+         hand-drawn box-shadow, no !important). */
+      --mdc-elevated-card-container-shape: 16px;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-2);
     }
 
     .login-card:hover {
-      box-shadow: 0 8px 32px rgba(99, 102, 241, 0.12) !important;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-5);
     }
 
     .card-header { padding: 24px 24px 0; }
-    .card-header h1 { margin: 0 0 8px; font-size: 1.75rem; font-weight: 800; color: #0f0f23 !important; }
-    .card-header p { margin: 0; color: #4a4a6a !important; font-size: 0.95rem; line-height: 1.5; }
+    .card-header h1 { margin: 0 0 8px; font-size: 1.75rem; font-weight: 800; color: var(--rp-on-surface) !important; }
+    .card-header p { margin: 0; color: var(--rp-on-surface-variant) !important; font-size: 0.95rem; line-height: 1.5; }
 
     mat-card-content { padding-top: 16px; }
     .full-width { width: 100%; margin-bottom: 8px; }
@@ -141,8 +143,8 @@ import { AuthService } from '../../core/services/auth.service';
       margin: 12px 24px 0;
       padding: 10px 14px;
       border-radius: 10px;
-      background: rgba(255, 152, 0, 0.12);
-      color: #b26a00 !important;
+      background: var(--rp-warning-soft);
+      color: var(--rp-warning) !important;
       font-size: 0.9rem;
       font-weight: 500;
     }
@@ -151,43 +153,36 @@ import { AuthService } from '../../core/services/auth.service';
       margin: 4px 0 12px;
       padding: 10px 14px;
       border-radius: 10px;
-      background: rgba(244, 67, 54, 0.1);
-      color: #c62828 !important;
+      background: var(--rp-error-soft);
+      color: var(--rp-error) !important;
       font-size: 0.9rem;
     }
 
     button[mat-raised-button] {
-      border-radius: 10px !important;
+      /* Material protected-button API: shape, elevation and the hover lift are
+         the button's own tokens — the hand-drawn :hover rule is gone. */
+      --mdc-protected-button-container-shape: 10px;
+      --mdc-protected-button-container-elevation-shadow: var(--mat-app-elevation-shadow-level-1);
+      --mdc-protected-button-hover-container-elevation-shadow: var(--mat-app-elevation-shadow-level-4);
+      --mdc-protected-button-pressed-container-elevation-shadow: var(--mat-app-elevation-shadow-level-0);
       font-weight: 600;
       text-transform: none;
       letter-spacing: 0.5px;
       padding: 0 24px;
       height: 48px;
       width: 100%;
-      transition: all 0.2s ease;
     }
 
-    button[mat-raised-button]:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.3);
-    }
-
-    .spinner {
+    .btn-spinner {
       display: inline-block;
-      width: 18px;
-      height: 18px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
       margin-right: 8px;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
     .mode-toggle {
       margin: 20px 0 0;
       font-size: 0.9rem;
-      color: #4a4a6a !important;
+      color: var(--rp-on-surface-variant) !important;
       text-align: center;
     }
 
@@ -196,17 +191,11 @@ import { AuthService } from '../../core/services/auth.service';
       border: none;
       padding: 0;
       margin-left: 4px;
-      color: #6366f1 !important;
+      color: var(--rp-primary) !important;
       font-size: inherit;
       font-weight: 600;
       cursor: pointer;
       text-decoration: underline;
-    }
-
-    /* Dark mode */
-    @media (prefers-color-scheme: dark) {
-      .card-header h1 { color: #e0e0e0; }
-      .mode-toggle { color: #9e9e9e; }
     }
   `]
 })

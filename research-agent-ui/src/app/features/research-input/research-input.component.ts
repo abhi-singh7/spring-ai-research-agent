@@ -5,7 +5,10 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
+import { MatExpansionModule } from '@angular/material/expansion';
+import { MatDividerModule } from '@angular/material/divider';
 import { Router, RouterLink } from '@angular/router';
 import { ResearchService } from '../../core/services/research.service';
 
@@ -19,6 +22,9 @@ import { ResearchService } from '../../core/services/research.service';
     MatInputModule,
     MatButtonModule,
     MatChipsModule,
+    MatProgressSpinnerModule,
+    MatExpansionModule,
+    MatDividerModule,
     RouterLink
   ],
   animations: [
@@ -50,46 +56,54 @@ import { ResearchService } from '../../core/services/research.service';
               }
             </mat-form-field>
 
-            <div class="advanced-options">
-              <mat-form-field appearance="outline" class="half-width">
-                <mat-label>Max Iterations (optional)</mat-label>
-                <input
-                  matInput
-                  type="number"
-                  formControlName="maxIterations"
-                  min="1"
-                  max="50"
-                />
-                <mat-hint>Controls research depth</mat-hint>
-              </mat-form-field>
+            <mat-expansion-panel class="advanced-panel">
+              <mat-expansion-panel-header>
+                <mat-panel-title>Advanced options</mat-panel-title>
+                <mat-panel-description>Optional — depth and breadth of the research</mat-panel-description>
+              </mat-expansion-panel-header>
 
-              <mat-form-field appearance="outline" class="half-width">
-                <mat-label>Sub-topics (optional)</mat-label>
-                <input
-                  matInput
-                  type="number"
-                  formControlName="subTopicCount"
-                  min="1"
-                  max="20"
-                />
-                <mat-hint>Number of parallel topics</mat-hint>
-              </mat-form-field>
-            </div>
+              <div class="advanced-options">
+                <mat-form-field appearance="outline" class="half-width">
+                  <mat-label>Max Iterations (optional)</mat-label>
+                  <input
+                    matInput
+                    type="number"
+                    formControlName="maxIterations"
+                    min="1"
+                    max="50"
+                  />
+                  <mat-hint>Controls research depth</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="half-width">
+                  <mat-label>Sub-topics (optional)</mat-label>
+                  <input
+                    matInput
+                    type="number"
+                    formControlName="subTopicCount"
+                    min="1"
+                    max="20"
+                  />
+                  <mat-hint>Number of parallel topics</mat-hint>
+                </mat-form-field>
+              </div>
+            </mat-expansion-panel>
 
             <button
               mat-raised-button
-              color="primary"
               type="submit"
               [disabled]="!form.valid || isLoading()"
-              class="start-btn"
+              class="mat-primary start-btn"
             >
               @if (isLoading()) {
-                <span class="spinner"></span>
+                <mat-progress-spinner class="btn-spinner" mode="indeterminate" diameter="18" strokeWidth="2" />
                 Starting...
               } @else {
                 Start Research
               }
             </button>
+
+            <mat-divider></mat-divider>
 
             <div class="quick-topics">
               <p>Suggested topics:</p>
@@ -118,19 +132,19 @@ import { ResearchService } from '../../core/services/research.service';
     .input-card {
       width: 100%;
       max-width: 700px;
-      border-radius: 16px !important;
-      box-shadow: 0 4px 24px rgba(99, 102, 241, 0.08) !important;
-      transition: box-shadow 0.3s ease;
+      /* Material card API — shape + elevation tokens (scheme-aware shadows). */
+      --mdc-elevated-card-container-shape: 16px;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-2);
     }
 
     .input-card:hover {
-      box-shadow: 0 8px 32px rgba(99, 102, 241, 0.12) !important;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-5);
     }
 
     /* Card header */
     .card-header { padding: 24px 24px 0; }
-    .card-header h1 { margin: 0 0 8px; font-size: 1.75rem; font-weight: 800; color: #0f0f23 !important; }
-    .card-header p { margin: 0; color: #4a4a6a !important; font-size: 0.95rem; line-height: 1.5; }
+    .card-header h1 { margin: 0 0 8px; font-size: 1.75rem; font-weight: 800; color: var(--rp-on-surface) !important; }
+    .card-header p { margin: 0; color: var(--rp-on-surface-variant) !important; font-size: 0.95rem; line-height: 1.5; }
 
     /* Form fields */
     mat-card-content { padding-top: 16px; }
@@ -138,56 +152,50 @@ import { ResearchService } from '../../core/services/research.service';
     .half-width { width: 48%; margin-right: 4%; }
     .half-width:last-of-type { margin-right: 0; }
 
-    /* Advanced options grid */
-    .advanced-options { display: flex; justify-content: space-between; margin-bottom: 24px; gap: 8px; }
+    /* Advanced options (Material expansion panel) */
+    .advanced-panel {
+      margin: 20px 0;
+      /* Sit flush inside the input card — the card already provides the surface. */
+      --mat-expansion-container-background-color: transparent;
+      --mat-expansion-container-shape: 12px;
+    }
+    .advanced-panel mat-expansion-panel-header {
+      --mdc-filled-height: 48px;
+      --mdc-filled-shape-size: 12px;
+    }
+    .advanced-options { display: flex; justify-content: space-between; margin-bottom: 16px; gap: 8px; }
 
     /* Submit button */
     button[mat-raised-button] {
-      border-radius: 10px !important;
+      /* Material protected-button API: hover elevation is a token, not a hack. */
+      --mdc-protected-button-container-shape: 10px;
+      --mdc-protected-button-container-elevation-shadow: var(--mat-app-elevation-shadow-level-1);
+      --mdc-protected-button-hover-container-elevation-shadow: var(--mat-app-elevation-shadow-level-4);
+      --mdc-protected-button-pressed-container-elevation-shadow: var(--mat-app-elevation-shadow-level-0);
       font-weight: 600;
       text-transform: none;
       letter-spacing: 0.5px;
       padding: 0 24px;
       height: 48px;
-      transition: all 0.2s ease;
-    }
-
-    button[mat-raised-button]:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.3);
     }
 
     /* Spinner in button */
-    .spinner {
+    .btn-spinner {
       display: inline-block;
-      width: 18px;
-      height: 18px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
       margin-right: 8px;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Quick topics */
+    /* Quick topics (separated by a Material divider) */
     .quick-topics {
-      margin-top: 24px;
+      margin-top: 16px;
       padding-top: 16px;
-      border-top: 1px solid #f0f0f0;
     }
     .quick-topics p {
       font-size: 0.85rem;
-      color: #1a1a2e !important;
+      color: var(--rp-on-surface) !important;
       margin-bottom: 10px;
       font-weight: 600;
-    }
-
-    /* Dark mode */
-    @media (prefers-color-scheme: dark) {
-      .card-header h1 { color: #e0e0e0; }
-      .quick-topics p { color: #9e9e9e; }
-      .advanced-options { border-top-color: rgba(255, 255, 255, 0.1); }
     }
 
     /* Fade in animation */
