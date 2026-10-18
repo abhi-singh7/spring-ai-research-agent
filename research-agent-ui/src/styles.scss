@@ -135,9 +135,12 @@ $theme-dark: mat.define-theme((
   --rp-on-warning-container: #{map.get($status, on-warning-container)};
 }
 
-/* Material component tokens: light by default, dark when the OS asks for it.
-   (This replaces the 21 hand-written prefers-color-scheme blocks that used to
-   live across the components.) */
+/* The components whose CSS this app actually renders. Emitted twice — once per
+   scheme — and nothing else: mat.all-component-themes() also emits tabs, paginator,
+   stepper, sidenav, table, datepicker, grid-list, menu, list, tree, sort, radio,
+   select, slider, slide-toggle, autocomplete, bottom-sheet and fab, none of which
+   appear here. (This replaces the 21 hand-written prefers-color-scheme blocks that
+   used to live across the components.) */
 @mixin rp-component-themes($theme) {
   @include mat.core-theme($theme);
   @include mat.card-theme($theme);
@@ -159,16 +162,29 @@ $theme-dark: mat.define-theme((
   @include mat.toolbar-theme($theme);
 }
 
+/* ============================================================
+   SCHEME SWITCHING — class scoped, not media queried.
+
+   `:root` carries the light theme; `:root.rp-theme-dark` re-declares the SAME
+   Material tokens for the dark palette on the same element, at higher specificity.
+   ThemeService (core/services/theme.service.ts) decides which class <html> gets:
+   'auto' asks window.matchMedia, 'light'/'dark' are the user's opt-out, persisted
+   and replayed before the first render. A class (rather than a media query) is what
+   makes the opt-out possible at all — and because every Material component reads
+   these tokens through var(), restyling the app is one class flip.
+   ------------------------------------------------------------
+   Material's theme mixins place token declarations at the current selector when
+   nested (see core/_core-theme.scss: `current-selector-or-root()`), which is what
+   makes this scoping legal.
+   ============================================================ */
 :root {
   @include rp-component-themes($theme-light);
   @include rp-vars($theme-light, $rp-status-light);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    @include rp-component-themes($theme-dark);
-    @include rp-vars($theme-dark, $rp-status-dark);
-  }
+:root.rp-theme-dark {
+  @include rp-component-themes($theme-dark);
+  @include rp-vars($theme-dark, $rp-status-dark);
 }
 
 /* M3 dropped the `color="primary|warn"` attributes (they are no-ops under an
@@ -177,10 +193,8 @@ $theme-dark: mat.define-theme((
 :root {
   @include mat.color-variants-backwards-compatibility($theme-light);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    @include mat.color-variants-backwards-compatibility($theme-dark);
-  }
+:root.rp-theme-dark {
+  @include mat.color-variants-backwards-compatibility($theme-dark);
 }
 
 /* ------------------------------------------------------------
