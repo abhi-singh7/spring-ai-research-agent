@@ -10,7 +10,7 @@ spring:
       # Sets call/read/write timeouts; keep in sync with spring.ai.sse.timeout below.
       timeout: 600s # a bug in spring-ai 2.0.0-beta.1 prevents this from being applied to the OpenAI client, so we also set directly in the openAI chatOptions bean
       chat:
-          model: ${LLM_MODEL:ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF}
+          model: ${LLM_MODEL:unsloth/gemma-4-12B-it-qat-GGUF}
           ##model: ${LLM_MODEL:qwopus3.6-35b-a3b-v1}
           temperature: 0.7
           n: 1
@@ -81,7 +81,7 @@ app:
     ttl: P7D
   cleanup:
     stale-after: PT45M   # PROCESSING sessions older than this are considered abandoned
-    interval: PT20M     # Scheduler runs every 20 minutes (fixed rate)
+    interval: PT5M     # Scheduler runs every 5 minutes (fixed rate)
   search:
     firecrawl-base-url: ${FIRECRAWL_BASE_URL:http://localhost:3002}   # self-hosted Firecrawl API — preferred search backend (POST /v2/search) and scrape fallback in UrlReaderTool (POST /v2/scrape)
     ollama-base-url: https://ollama.com   # hosted API used by WebSearchTool's third fallback backend
