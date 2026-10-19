@@ -529,6 +529,60 @@ class ResearchOrchestratorServiceTest {
         assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
     }
 
+    @Test
+    void processResumeAsync_shouldReplayTheStoredRoundDepth_andStreamRoundCounters() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = createMockSession(sessionId, "Test topic");
+        session.setStatus(ResearchStatus.PROCESSING);
+        // The document records the depth the plan was built with; the configured default must not win.
+        session.setMaxRounds(3);
+        session.addStep(breakdownStep("""
+                {"topic":"Test topic","subTopics":[
+                  {"id":1,"title":"Alpha","description":"d","searchQueries":["q"]},
+                  {"id":2,"title":"Beta","description":"d","searchQueries":["q"]}
+                ]}"""));
+        session.addStep(step(StepType.SUBTOPIC, 1, "COMPLETED", "Alpha note.\n\n## Sources\n- A — https://a.example/1"));
+        session.addStep(step(StepType.SUBTOPIC, 2, "FAILED", null));
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(sessionRepo.findById(sessionId)).thenReturn(java.util.Optional.of(session));
+        ResearchCancellationRegistry.CancellationHandle handle = mock(ResearchCancellationRegistry.CancellationHandle.class);
+        when(cancellationRegistry.register(sessionId)).thenReturn(handle);
+        when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        ReflectionTestUtils.setField(service, "defaultMaxIterations", 1);
+        ReflectionTestUtils.setField(service, "qualityEvalEnabled", false);
+
+        // Round 1 already cites three pages (coverage met) but still leaves a gap, so a chase round is due.
+        com.researchagent.model.dto.ResearchRoundNote gapped = new com.researchagent.model.dto.ResearchRoundNote(java.util.List.of(
+                "Beta finding one, long enough to be substantive about the withdrawn feature set.",
+                "Beta finding two, also substantive and supported by the sources listed below.",
+                "Beta finding three, adding more length so the coverage threshold is clearly satisfied."),
+                java.util.List.of(new com.researchagent.model.dto.ResearchRoundNote.SourceRef("One", "https://b.example/1"),
+                        new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Two", "https://b.example/2"),
+                        new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Three", "https://b.example/3")),
+                java.util.List.of("Was the feature reinstated in the following release?"));
+        // Round 2 reads a new page and closes the gap, so the sub-topic finishes after two rounds of three.
+        com.researchagent.model.dto.ResearchRoundNote closed = new com.researchagent.model.dto.ResearchRoundNote(java.util.List.of(
+                "The changelog says the feature was reinstated in the following release."),
+                java.util.List.of(new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Changelog", "https://b.example/4")),
+                java.util.List.of("none"));
+        when(llmGateway.completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class)))
+            .thenReturn(gapped, closed);
+        when(llmGateway.streamComplete(eq(sessionId), anyString(), anyString(), anyDouble()))
+            .thenReturn(Flux.just("# Final Report"));
+
+        service.processResumeAsync(sessionId);
+
+        // The re-researched sub-topic honours the stored depth, so the UI sees the round counter advancing.
+        verify(streamService).sendProgress(eq(sessionId), eq("Resuming: reusing completed research on Alpha"));
+        verify(streamService).sendProgress(eq(sessionId), eq("Researching: Beta (round 1/3)"));
+        verify(streamService).sendProgress(eq(sessionId), eq("Researching: Beta (round 2/3)"));
+        verify(streamService, never()).sendProgress(eq(sessionId), eq("Researching: Beta (round 3/3)"));
+        verify(llmGateway, times(2)).completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class));
+        assertThat(session.getMaxRounds()).isEqualTo(3);
+        assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
+    }
+
     // ---------- helpers ----------
 
     private ResearchStep step(StepType type, int orderIndex, String status, String content) {

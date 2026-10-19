@@ -99,6 +99,19 @@ class ResearchFlowQualityTest {
                 List.of("depth missing"));
     }
 
+    /** Meets the coverage heuristic (>=3 sources, >400 chars) but still reports gaps, so a chase round is due. */
+    private static ResearchRoundNote coveredButGappedNote() {
+        List<String> findings = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            findings.add("Finding number " + i + ": a substantive claim that is supported by the sources read this round.");
+        }
+        return new ResearchRoundNote(findings,
+                List.of(new SourceRef("Survey paper", "https://example.com/paper-one"),
+                        new SourceRef("Vendor docs", "https://docs.example.org/two"),
+                        new SourceRef("Academic study", "https://academic.edu/three")),
+                List.of("Is the withdrawn feature reintroduced in the next release?"));
+    }
+
     private ResearchRequest request(int maxIterations) {
         ResearchRequest request = new ResearchRequest();
         request.setTopic(session.getTopic());
@@ -228,6 +241,32 @@ class ResearchFlowQualityTest {
         verify(llmGateway).streamComplete(any(UUID.class), anyString(), synthesisInput.capture(), any(Double.class));
         assertTrue(synthesisInput.getValue().contains("Early signal only"),
                 "round-1 findings must be carried into the report input");
+    }
+
+    @Test
+    void coveredRoundWithOpenQuestions_stillChasesThem_andUiSeesTheRoundCounter() {
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), any(Double.class), any(ParameterizedTypeReference.class)))
+                .thenReturn(List.of(subTopic(1, "Subtopic 1")));
+        when(llmGateway.completeStructured(any(UUID.class), anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class)))
+                .thenReturn(coveredButGappedNote(), coveredNote()); // round 1: coverage met but gaps open; round 2 closes them
+        when(llmGateway.streamComplete(any(UUID.class), anyString(), anyString(), eq(ResearchOrchestratorService.TEMP_SYNTHESIS)))
+                .thenReturn(Flux.just("done"));
+
+        service.processResearchAsync(session.getId(), request(3));
+
+        assertEquals(ResearchStatus.COMPLETED, session.getStatus());
+        // Coverage alone must not end the iteration: round 1 cited 3 pages and wrote >400 chars, yet the round
+        // still asked a question, so exactly one chase round runs and then stops (nothing left open).
+        verify(llmGateway, times(2)).completeStructured(any(UUID.class), anyString(), anyString(), any(Double.class), eq(ResearchRoundNote.class));
+        verify(llmGateway, never()).complete(any(UUID.class), anyString(), anyString(), any(Double.class));
+
+        // The UI's per-round step state depends on the "(round r/max)" progress counter the pipeline emits.
+        verify(streamService).sendProgress(eq(session.getId()),
+                eq("Researching: Subtopic 1 (round 1/3)"));
+        verify(streamService).sendProgress(eq(session.getId()),
+                eq("Researching: Subtopic 1 (round 2/3)"));
+        verify(streamService, never()).sendProgress(eq(session.getId()),
+                eq("Researching: Subtopic 1 (round 3/3)"));
     }
 
     @Test

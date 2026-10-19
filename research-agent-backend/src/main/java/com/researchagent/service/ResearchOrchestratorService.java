@@ -401,8 +401,10 @@ public class ResearchOrchestratorService {
 
             // --- Reuse completed sub-topics verbatim; re-research failed/missing ones in place ---
             // Depth comes from the session document: a user who asked for 5 rounds must not silently get
-            // the configured default when their sub-topics are re-researched on resume.
-            int maxRounds = session.getMaxRounds() != null ? session.getMaxRounds() : defaultMaxIterations;
+            // the configured default when their sub-topics are re-researched on resume. clampMaxRounds also
+            // re-applies the 1..MAX_ROUNDS ceiling (documents can be hand-edited) and covers legacy documents
+            // that never recorded a depth.
+            int maxRounds = clampMaxRounds(session.getMaxRounds());
             List<String> findingsBlocks = new ArrayList<>();
             List<String> failedSubTopics = new ArrayList<>();
             LinkedHashMap<String, String> aggregatedSources = new LinkedHashMap<>(); // normalized URL -> "Title — URL" line
@@ -693,7 +695,8 @@ public class ResearchOrchestratorService {
             String user = buildRoundUserMessage(subTopic, note.toString(), sourcesByUrl);
 
             int urlsBefore = sourcesByUrl.size();
-            String roundText = researchRoundText(handle, sessionId, subTopic, round, system, user); // throws after final attempt (or on cancel)
+            RoundOutcome roundOutcome = researchRoundText(handle, sessionId, subTopic, round, system, user); // throws after final attempt (or on cancel)
+            String roundText = roundOutcome.noteText();
 
             if (note.length() > 0) {
                 note.append("\n\n").append(roundText);
@@ -703,13 +706,18 @@ public class ResearchOrchestratorService {
             collectSourceInfo(roundText, sourcesByUrl);
             boolean newEvidence = sourcesByUrl.size() > urlsBefore;
 
-            // Early stop: coverage looks sufficient (distinct URLs + substantive notes).
-            if (isCovered(note.toString(), sourcesByUrl.size())) {
-                break;
-            }
             // A round after the first that produced no new evidence is very unlikely to help — stop.
             if (!newEvidence && round >= 2) {
                 log.info("No new sources captured in round {} for sub-topic '{}'; stopping early", round, subTopic.title());
+                break;
+            }
+            // Coverage alone must NOT end the iteration: the round-1 sweep normally cites >= 3 pages and
+            // writes > 400 chars, so stopping there would silently ignore the requested depth. The follow-up
+            // rounds exist to chase the round's Open Questions, so only stop once coverage holds AND the round
+            // reported no gaps left.
+            if (isCovered(note.toString(), sourcesByUrl.size()) && !gapsRemain(roundOutcome)) {
+                log.info("Coverage met with no open questions left after round {} for sub-topic '{}'; stopping",
+                        round, subTopic.title());
                 break;
             }
         }
@@ -724,6 +732,68 @@ public class ResearchOrchestratorService {
 
     private boolean isCovered(String note, int distinctSourceCount) {
         return note.length() >= MIN_NOTE_LENGTH_FOR_COVERAGE && distinctSourceCount >= MIN_SOURCES_FOR_COVERAGE;
+    }
+
+    /**
+     * Does this round leave gaps to chase? A null Open Questions list (a free-form note that never stated the
+     * section) counts as gaps — the iteration must keep going up to the requested depth rather than end on a guess.
+     */
+    private boolean gapsRemain(RoundOutcome outcome) {
+        List<String> open = outcome.openQuestions();
+        return open == null || !open.isEmpty();
+    }
+
+    /** Structured notes state their open questions directly; blanks and "None"-style placeholders collapse to none. */
+    private List<String> normalizeOpenQuestions(List<String> questions) {
+        List<String> kept = new ArrayList<>();
+        if (questions == null) {
+            return kept;
+        }
+        for (String question : questions) {
+            if (question == null || question.isBlank() || isNonePlaceholder(question)) {
+                continue;
+            }
+            kept.add(question.trim());
+        }
+        return kept;
+    }
+
+    /** The researcher writes "None" (or a variant) when it believes coverage is complete. */
+    private boolean isNonePlaceholder(String value) {
+        String v = value.trim().toLowerCase().replaceAll("[.!?:;]+$", "");
+        return v.isEmpty() || v.equals("none") || v.equals("n/a") || v.equals("na") || v.equals("nothing")
+                || v.equals("no open questions") || v.equals("no gaps") || v.equals("coverage complete");
+    }
+
+    /** Heading introducing a free-form note's open questions: "## Open Questions", "3. Open Questions —", "**Open Questions**:". */
+    private static final Pattern OPEN_QUESTIONS_HEADING_PATTERN =
+            Pattern.compile("(?im)^[ \\t]*(?:#{1,6}|\\d+[.)])?[ \\t]*\\*{0,2}open[ \\t]+questions\\b\\*{0,2}");
+
+    /**
+     * Open-question bullets parsed out of a free-form round note (the structured path states them directly).
+     * Returns null when the note has no Open Questions section at all, i.e. unknown — never assume "no gaps".
+     */
+    private List<String> parseOpenQuestions(String noteText) {
+        if (noteText == null || noteText.isBlank()) {
+            return null;
+        }
+        Matcher heading = OPEN_QUESTIONS_HEADING_PATTERN.matcher(noteText);
+        int sectionStart = -1;
+        while (heading.find()) {
+            sectionStart = heading.end(); // last occurrence: Open Questions is the note's final section
+        }
+        if (sectionStart < 0) {
+            return null;
+        }
+        List<String> kept = new ArrayList<>();
+        for (String line : noteText.substring(sectionStart).split("\\R")) {
+            String item = line.trim().replaceAll("^[-*•][ \\t]+", "").replaceFirst("^[—–:][ \\t]*", "").trim();
+            if (item.isEmpty() || isNonePlaceholder(item)) {
+                continue;
+            }
+            kept.add(item);
+        }
+        return kept;
     }
 
     private String buildRoundUserMessage(SubTopic subTopic, String currentNote, LinkedHashMap<String, String> sourcesByUrl) {
@@ -920,22 +990,25 @@ public class ResearchOrchestratorService {
     // ==================== LLM RETRIES & HELPERS ====================
 
     /**
-     * One research round's note text, with bounded retries: the first attempt asks for STRUCTURED output
-     * (Spring AI appends the JSON schema for {@link ResearchRoundNote} and parses the answer into it);
-     * subsequent attempts fall back to a free-form note that the text parsing downstream still handles.
+     * One research round's note text plus the open questions it left, with bounded retries: the first attempt asks for
+     * STRUCTURED output (Spring AI appends the JSON schema for {@link ResearchRoundNote} and parses the answer into it);
+     * subsequent attempts fall back to a free-form note whose Open Questions section is parsed from its text
+     * ({@link #parseOpenQuestions} returns null when that section is absent, i.e. "unknown").
      * The total attempt budget stays {@link #MAX_LLM_ATTEMPTS}. Throws IllegalStateException once all
      * attempts are exhausted so callers can decide how to degrade.
      */
-    private String researchRoundText(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, SubTopic subTopic, int round,
-                                     String systemPrompt, String userMessage) {
+    private RoundOutcome researchRoundText(ResearchCancellationRegistry.CancellationHandle handle, UUID sessionId, SubTopic subTopic, int round,
+                                          String systemPrompt, String userMessage) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
             handle.ensureActive(); // checkpoint — cancelled runs start no further LLM attempts
             try {
                 if (attempt == 1) {
-                    return renderRoundNote(llmGateway.completeStructured(sessionId, systemPrompt, userMessage, TEMP_RESEARCH, ResearchRoundNote.class));
+                    ResearchRoundNote note = llmGateway.completeStructured(sessionId, systemPrompt, userMessage, TEMP_RESEARCH, ResearchRoundNote.class);
+                    return new RoundOutcome(renderRoundNote(note), normalizeOpenQuestions(note.openQuestions()));
                 }
-                return llmGateway.complete(sessionId, systemPrompt, userMessage, TEMP_RESEARCH).trim();
+                String freeForm = llmGateway.complete(sessionId, systemPrompt, userMessage, TEMP_RESEARCH).trim();
+                return new RoundOutcome(freeForm, parseOpenQuestions(freeForm));
             } catch (RuntimeException e) {
                 last = e;
                 log.warn("Research round {} attempt {}/{} failed for sub-topic '{}': {}",
@@ -1177,7 +1250,7 @@ public class ResearchOrchestratorService {
         try {
             String roundText = researchRoundText(handle, sessionId,
                     new SubTopic(99, "Supplementary Research", "Targeted gap-filling based on quality eval", List.of()),
-                    1, system, userMessage.toString());
+                    1, system, userMessage.toString()).noteText();
 
             // Collect any new sources from the supplementary pass.
             collectSourceInfo(roundText, aggregatedSources);
@@ -1228,6 +1301,13 @@ public class ResearchOrchestratorService {
 
     /** One sub-topic's research output: accumulated note text and captured sources (normalized URL -> display line). */
     private record ResearchRoundResult(String note, LinkedHashMap<String, String> sourcesByUrl) {
+    }
+
+    /**
+     * One research round's outcome: its note text plus the open questions it left (null = the note never stated
+     * the section, i.e. unknown). The open questions decide whether another round is worth running.
+     */
+    private record RoundOutcome(String noteText, List<String> openQuestions) {
     }
 
     /**
