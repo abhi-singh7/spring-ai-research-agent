@@ -2,6 +2,9 @@ package com.researchagent.controller;
 
 import com.researchagent.security.InvalidTokenException;
 import com.researchagent.security.JwtService;
+import com.researchagent.security.CurrentUser;
+import com.researchagent.model.entity.ResearchSession;
+import com.researchagent.service.ResearchOrchestratorService;
 import com.researchagent.service.ResearchStreamingService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -20,10 +23,13 @@ public class ResearchStreamController {
 
     private final ResearchStreamingService streamService;
     private final JwtService jwtService;
+    private final ResearchOrchestratorService orchestratorService;
 
-    public ResearchStreamController(ResearchStreamingService streamService, JwtService jwtService) {
+    public ResearchStreamController(ResearchStreamingService streamService, JwtService jwtService,
+                                    ResearchOrchestratorService orchestratorService) {
         this.streamService = streamService;
         this.jwtService = jwtService;
+        this.orchestratorService = orchestratorService;
     }
 
     /**
@@ -42,10 +48,25 @@ public class ResearchStreamController {
         if (token == null || token.isBlank()) {
             return unauthorized("Missing token");
         }
+        CurrentUser caller;
         try {
-            jwtService.validate(token);
+            caller = jwtService.validate(token);
         } catch (InvalidTokenException e) {
             return unauthorized("Invalid or expired token");
+        }
+        // Ownership gate (openspec/changes/session-ownership): a valid token for another user must not
+        // open a stream. 404 rather than 403 so the endpoint never confirms that the session exists.
+        ResearchSession session = orchestratorService.getResearch(sessionId);
+        if (session == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("error", "Session not found"));
+        }
+        String owner = session.getOwner();
+        if (owner != null && !owner.equals(caller.username())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("error", "Session not found"));
         }
         // Register this connection with the streaming service so it can send events
         return ResponseEntity.ok()

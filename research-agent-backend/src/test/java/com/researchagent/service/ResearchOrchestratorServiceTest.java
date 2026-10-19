@@ -7,6 +7,7 @@ import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.entity.ResearchStep;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.model.enums.StepType;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.repository.ResearchSessionRepository;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -39,6 +40,7 @@ class ResearchOrchestratorServiceTest {
     @Mock private ResearchStreamingService streamService;
     @Mock private Executor researchTaskExecutor;
     @Mock private ResearchCancellationRegistry cancellationRegistry;
+    @Mock private LlmLogRepository llmLogRepository;
     @org.mockito.Spy private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
@@ -60,7 +62,7 @@ class ResearchOrchestratorServiceTest {
         });
 
         // When
-        ResearchSession session = service.createAndStart(request);
+        ResearchSession session = service.createAndStart(request, "alice");
 
         // Then: session is persisted with PROCESSING status
         assertThat(session).isNotNull();
@@ -163,9 +165,9 @@ class ResearchOrchestratorServiceTest {
         ResearchSession s1 = createMockSession(id1, "Topic A");
         ResearchSession s2 = createMockSession(id2, "Topic B");
         PageImpl<ResearchSession> page = new PageImpl<>(List.of(s2, s1), PageRequest.of(0, 20), 2);
-        when(sessionRepo.findAllByOrderByCreatedAtDesc(any(PageRequest.class))).thenReturn(page);
+        when(sessionRepo.findOwnedByOrderByCreatedAtDesc(any(String.class), any(PageRequest.class))).thenReturn(page);
 
-        var result = service.getHistoricalSessions(s -> true, PageRequest.of(0, 20));
+        var result = service.getHistoricalSessions("alice", PageRequest.of(0, 20));
 
         assertThat(result.getContent()).hasSize(2);
     }
@@ -175,9 +177,9 @@ class ResearchOrchestratorServiceTest {
         UUID id1 = UUID.randomUUID();
         ResearchSession s1 = createMockSession(id1, "Spring Boot testing");
         PageImpl<ResearchSession> page = new PageImpl<>(List.of(s1), PageRequest.of(0, 20), 1);
-        when(sessionRepo.findByTopicContainingIgnoreCase(eq("testing"), any(PageRequest.class))).thenReturn(page);
+        when(sessionRepo.findByTopicContainingIgnoreCaseAndOwner(eq("testing"), any(String.class), any(PageRequest.class))).thenReturn(page);
 
-        var result = service.searchByTopic("testing", PageRequest.of(0, 20));
+        var result = service.searchByTopic("testing", "alice", PageRequest.of(0, 20));
 
         assertThat(result.getContent()).hasSize(1);
     }
@@ -524,6 +526,60 @@ class ResearchOrchestratorServiceTest {
         assertThat(betaSteps).isEqualTo(1);
         // Beta was researched exactly once (single round).
         verify(llmGateway, times(1)).completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class));
+        assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
+    }
+
+    @Test
+    void processResumeAsync_shouldReplayTheStoredRoundDepth_andStreamRoundCounters() {
+        UUID sessionId = UUID.randomUUID();
+        ResearchSession session = createMockSession(sessionId, "Test topic");
+        session.setStatus(ResearchStatus.PROCESSING);
+        // The document records the depth the plan was built with; the configured default must not win.
+        session.setMaxRounds(3);
+        session.addStep(breakdownStep("""
+                {"topic":"Test topic","subTopics":[
+                  {"id":1,"title":"Alpha","description":"d","searchQueries":["q"]},
+                  {"id":2,"title":"Beta","description":"d","searchQueries":["q"]}
+                ]}"""));
+        session.addStep(step(StepType.SUBTOPIC, 1, "COMPLETED", "Alpha note.\n\n## Sources\n- A — https://a.example/1"));
+        session.addStep(step(StepType.SUBTOPIC, 2, "FAILED", null));
+
+        when(sessionRepo.findByIdWithSteps(sessionId)).thenReturn(session);
+        when(sessionRepo.findById(sessionId)).thenReturn(java.util.Optional.of(session));
+        ResearchCancellationRegistry.CancellationHandle handle = mock(ResearchCancellationRegistry.CancellationHandle.class);
+        when(cancellationRegistry.register(sessionId)).thenReturn(handle);
+        when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        ReflectionTestUtils.setField(service, "defaultMaxIterations", 1);
+        ReflectionTestUtils.setField(service, "qualityEvalEnabled", false);
+
+        // Round 1 already cites three pages (coverage met) but still leaves a gap, so a chase round is due.
+        com.researchagent.model.dto.ResearchRoundNote gapped = new com.researchagent.model.dto.ResearchRoundNote(java.util.List.of(
+                "Beta finding one, long enough to be substantive about the withdrawn feature set.",
+                "Beta finding two, also substantive and supported by the sources listed below.",
+                "Beta finding three, adding more length so the coverage threshold is clearly satisfied."),
+                java.util.List.of(new com.researchagent.model.dto.ResearchRoundNote.SourceRef("One", "https://b.example/1"),
+                        new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Two", "https://b.example/2"),
+                        new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Three", "https://b.example/3")),
+                java.util.List.of("Was the feature reinstated in the following release?"));
+        // Round 2 reads a new page and closes the gap, so the sub-topic finishes after two rounds of three.
+        com.researchagent.model.dto.ResearchRoundNote closed = new com.researchagent.model.dto.ResearchRoundNote(java.util.List.of(
+                "The changelog says the feature was reinstated in the following release."),
+                java.util.List.of(new com.researchagent.model.dto.ResearchRoundNote.SourceRef("Changelog", "https://b.example/4")),
+                java.util.List.of("none"));
+        when(llmGateway.completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class)))
+            .thenReturn(gapped, closed);
+        when(llmGateway.streamComplete(eq(sessionId), anyString(), anyString(), anyDouble()))
+            .thenReturn(Flux.just("# Final Report"));
+
+        service.processResumeAsync(sessionId);
+
+        // The re-researched sub-topic honours the stored depth, so the UI sees the round counter advancing.
+        verify(streamService).sendProgress(eq(sessionId), eq("Resuming: reusing completed research on Alpha"));
+        verify(streamService).sendProgress(eq(sessionId), eq("Researching: Beta (round 1/3)"));
+        verify(streamService).sendProgress(eq(sessionId), eq("Researching: Beta (round 2/3)"));
+        verify(streamService, never()).sendProgress(eq(sessionId), eq("Researching: Beta (round 3/3)"));
+        verify(llmGateway, times(2)).completeStructured(eq(sessionId), anyString(), anyString(), anyDouble(), eq(com.researchagent.model.dto.ResearchRoundNote.class));
+        assertThat(session.getMaxRounds()).isEqualTo(3);
         assertThat(session.getStatus()).isEqualTo(ResearchStatus.COMPLETED);
     }
 

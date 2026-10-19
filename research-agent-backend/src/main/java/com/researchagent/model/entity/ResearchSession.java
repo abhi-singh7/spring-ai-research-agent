@@ -37,6 +37,26 @@ public class ResearchSession {
 
     private String prompt;
 
+    /**
+     * Username (JWT {@code sub}, stored lowercase by {@link com.researchagent.security.JwtService}) of the
+     * user who created this session — the ownership gate for every per-session endpoint and for history
+     * lists. {@code null} means "unowned": documents written before the ownership change simply lack the
+     * field, and MongoDB's {@code $in: [username, null]} semantics (plus the explicit guard in the
+     * controller) treat those as reachable. See openspec/changes/session-ownership.
+     */
+    @Indexed
+    private String owner;
+
+    /**
+     * Research depth actually used for this session, persisted so a resume re-runs failed sub-topics with
+     * the same budget the user asked for instead of the configured default
+     * (openspec/changes/bounded-research-params).
+     */
+    private Integer maxRounds;
+
+    /** Sub-topic count requested at creation; recovered by the resume path when no plan was stored. */
+    private Integer subTopicCount;
+
     @JsonIgnore
     @ToString.Exclude
     private List<ResearchStep> steps = new ArrayList<>();

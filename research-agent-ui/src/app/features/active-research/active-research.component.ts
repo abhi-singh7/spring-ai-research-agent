@@ -4,6 +4,9 @@ import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { Subscription } from 'rxjs';
 import { StepListComponent } from '../../shared/components/step-list/step-list.component';
 import { ReportViewerComponent } from '../../shared/components/report-viewer/report-viewer.component';
@@ -13,7 +16,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
 @Component({
   selector: 'app-active-research',
   standalone: true,
-  imports: [MatCardModule, MatProgressBarModule, MatButtonModule, RouterLink, StepListComponent, ReportViewerComponent, MatIconModule],
+  imports: [MatCardModule, MatProgressBarModule, MatButtonModule, RouterLink, StepListComponent, ReportViewerComponent, MatIconModule, MatChipsModule, MatTooltipModule, MatProgressSpinnerModule],
   animations: [
     trigger('fadeIn', [
       transition(':enter', [style({ opacity: 0, transform: 'translateY(-8px)' }), animate('300ms ease-out', style({ opacity: 1, transform: 'translateY(0)' }))]),
@@ -44,16 +47,16 @@ import { trigger, transition, style, animate } from '@angular/animations';
         <mat-card class="status-header" [@fadeIn]>
           <div class="status-info">
             <h2>{{ researchSession()!.topic }}</h2>
-            <span class="status-chip" [class.processing]="researchSession()!.status === 'PROCESSING'"
+            <mat-chip class="status-chip" [matTooltip]="statusHint(researchSession()!.status)" [class.processing]="researchSession()!.status === 'PROCESSING'"
                   [class.completed]="researchSession()!.status === 'COMPLETED'"
                   [class.failed]="researchSession()!.status === 'FAILED'"
                   [class.pending]="researchSession()!.status === 'PENDING'"
                   [class.cancelled]="researchSession()!.status === 'CANCELLED'">
               {{ getStatusLabel(researchSession()!.status) }}
-            </span>
+            </mat-chip>
 
             @if (researchSession()?.status === 'FAILED') {
-              <button mat-raised-button color="primary" class="resume-btn" [disabled]="resuming()" (click)="onResume()">
+              <button mat-raised-button class="mat-primary resume-btn" [disabled]="resuming()" (click)="onResume()">
                 <mat-icon>play_arrow</mat-icon>
                 {{ resuming() ? 'Resuming…' : 'Resume Research' }}
               </button>
@@ -72,7 +75,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
         <!-- Streaming content placeholder while waiting for first chunks -->
         @if (shouldDisplayStreamingContent() && !streamingContent()) {
           <mat-card class="streaming-placeholder" [@fadeIn]>
-            <div class="spinner"></div>
+            <mat-progress-spinner class="placeholder-spinner" mode="indeterminate" diameter="20" strokeWidth="3" />
             <p>Gathering findings...</p>
           </mat-card>
         }
@@ -86,7 +89,7 @@ import { trigger, transition, style, animate } from '@angular/animations';
 
         <!-- Cancel button — only show when research is actively processing -->
         @if (researchSession()?.status === 'PROCESSING') {
-          <button mat-raised-button color="warn" class="cancel-btn" [@fadeIn] (click)="onCancel()">
+          <button mat-raised-button class="mat-warn cancel-btn" [@fadeIn] (click)="onCancel()">
             Cancel Research
           </button>
         }
@@ -99,63 +102,72 @@ import { trigger, transition, style, animate } from '@angular/animations';
     .active-research-container { padding: 24px; max-width: 1000px; margin: 0 auto; }
 
     /* Back link */
-    .back-link { display: inline-flex; align-items: center; gap: 6px; color: #6366f1; text-decoration: none; font-weight: 500; padding: 8px 0; margin-bottom: 16px; transition: all 0.2s ease; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--rp-primary); text-decoration: none; font-weight: 500; padding: 8px 0; margin-bottom: 16px; transition: opacity var(--rp-motion-fast) var(--rp-easing-standard), transform var(--rp-motion-fast) var(--rp-easing-standard); }
     .back-link:hover { opacity: 0.7; transform: translateX(-2px); }
 
     /* Resume button */
-  .resume-btn { border-radius: 8px !important; font-weight: 500; text-transform: none; letter-spacing: 0.3px; }
+  .resume-btn { --mdc-protected-button-container-shape: 8px; font-weight: 500; text-transform: none; letter-spacing: 0.3px; }
 
   /* Status header */
-    .status-header { margin-bottom: 24px; border-radius: 12px !important; overflow: hidden; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08); }
-    .status-info { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
-    .status-info h2 { margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f0f23 !important; flex: 1; }
-
-    /* Status chip */
-    .status-chip { padding: 4px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; letter-spacing: 0.3px; transition: all 0.3s ease; }
-    .processing { background-color: #fff3e0; color: #ef6c00; animation: pulse-chip 2s infinite; }
-    .completed { background-color: #e8f5e9; color: #2e7d32; }
-    .failed { background-color: #ffebee; color: #c62828; }
-    .pending { background-color: #fafafa; color: #424242; border: 1px solid #bdbdbd; }
-    .cancelled { background-color: #eceff1; color: #546e7a; border: 1px solid #b0bec5; }
-
-    /* Dark mode status chip colors */
-    @media (prefers-color-scheme: dark) {
-      .status-info h2 { color: #e0e0e0; }
-      .processing { background-color: rgba(255, 183, 77, 0.2); color: #ffb74d; box-shadow: 0 0 10px rgba(255, 183, 77, 0.15); }
-      .completed { background-color: rgba(102, 187, 106, 0.2); color: #66bb6a; box-shadow: 0 0 10px rgba(102, 187, 106, 0.15); }
-      .failed { background-color: rgba(239, 83, 80, 0.2); color: #ef5350; box-shadow: 0 0 10px rgba(239, 83, 80, 0.15); }
-      .pending { background-color: rgba(158, 158, 158, 0.2); color: #bdbdbd; border: 1px solid #616161; }
-      .cancelled { background-color: rgba(176, 190, 197, 0.2); color: #b0bec5; border: 1px solid #616161; }
+    .status-header {
+      margin-bottom: 24px;
+      --mdc-elevated-card-container-shape: 12px;
+      overflow: hidden;
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-1);
     }
+    .status-info { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
+    .status-info h2 { margin: 0; font-size: 1.25rem; font-weight: 700; color: var(--rp-on-surface) !important; flex: 1; }
+
+    /* Status chip (Material mat-chip; colors through the chip's own tokens) */
+    .status-chip {
+      --mdc-chip-container-height: 28px;
+      --mdc-chip-container-shape-radius: 14px;
+      --mdc-chip-label-text-size: 0.8rem;
+      --mdc-chip-label-text-weight: 500;
+      flex-shrink: 0;
+    }
+    .status-chip.processing { --mdc-chip-elevated-container-color: var(--rp-primary-container); --mdc-chip-label-text-color: var(--rp-on-primary-container); animation: pulse-chip 2s infinite; }
+    .status-chip.completed { --mdc-chip-elevated-container-color: var(--rp-success-container); --mdc-chip-label-text-color: var(--rp-on-success-container); }
+    .status-chip.failed { --mdc-chip-elevated-container-color: var(--rp-error-container); --mdc-chip-label-text-color: var(--rp-on-error-container); }
+    .status-chip.pending { --mdc-chip-elevated-container-color: var(--rp-surface); --mdc-chip-label-text-color: var(--rp-on-surface-variant); }
+    .status-chip.cancelled { --mdc-chip-elevated-container-color: var(--rp-surface); --mdc-chip-label-text-color: var(--rp-outline); }
 
     /* Animated progress bar */
-    .animated-progress::ng-deep .mat-progress-bar-fill::after { animation: progress-gradient 2s linear infinite; background-image: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.3), transparent); }
+    .animated-progress::ng-deep .mat-progress-bar-fill::after { animation: progress-gradient 2s linear infinite; background-image: linear-gradient(90deg, transparent, var(--rp-brand-25), transparent); }
 
     /* Cancel button */
-    .cancel-btn { margin-top: 16px; border-radius: 8px !important; font-weight: 500; text-transform: none; letter-spacing: 0.3px; transition: all 0.2s ease; }
-    .cancel-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(239, 83, 80, 0.3); }
-
-    /* Error banner */
-    .error-banner { margin-bottom: 16px; padding: 12px 16px !important; background-color: #ffebee !important; color: #c62828 !important; display: flex; align-items: center; justify-content: space-between; border-radius: 8px !important; min-height: 48px; }
-    .error-banner span { flex: 1; margin-right: 16px; word-break: break-word; }
-    .error-banner button { flex-shrink: 0; }
-    @media (prefers-color-scheme: dark) { .error-banner { background-color: rgba(239, 83, 80, 0.15) !important; color: #ef5350 !important; } }
-
-    /* Streaming content placeholder */
-    .streaming-placeholder { display: flex; align-items: center; gap: 12px; padding: 24px; border-radius: 12px !important; background-color: #f8f9ff !important; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05); }
-    .streaming-placeholder .spinner { width: 20px; height: 20px; border: 3px solid #e0e0e0; border-top-color: #6366f1; border-radius: 50%; animation: spin 1s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .streaming-placeholder p { color: #7c7c9a; margin: 0; font-style: italic; }
-
-    /* Dark mode streaming placeholder */
-    @media (prefers-color-scheme: dark) {
-      .streaming-placeholder { background-color: rgba(99, 102, 241, 0.05) !important; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1); }
-      .streaming-placeholder .spinner { border-color: #424242; border-top-color: #6366f1; }
-      .streaming-placeholder p { color: #9e9e9e; }
+    .cancel-btn {
+      margin-top: 16px;
+      /* Material protected-button API — hover raises elevation via its own token,
+         so the hand-drawn :hover transform/shadow rule is gone. */
+      --mdc-protected-button-container-shape: 8px;
+      --mdc-protected-button-hover-container-elevation-shadow: var(--mat-app-elevation-shadow-level-4);
+      --mdc-protected-button-pressed-container-elevation-shadow: var(--mat-app-elevation-shadow-level-0);
+      font-weight: 500;
+      text-transform: none;
+      letter-spacing: 0.3px;
     }
 
+    /* Error banner */
+    .error-banner { margin-bottom: 16px; padding: 12px 16px !important; background-color: var(--rp-error-container) !important; color: var(--rp-on-error-container) !important; display: flex; align-items: center; justify-content: space-between; border-radius: 8px !important; min-height: 48px; }
+    .error-banner span { flex: 1; margin-right: 16px; word-break: break-word; }
+    .error-banner button { flex-shrink: 0; }
+
+    /* Streaming content placeholder */
+    .streaming-placeholder {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 24px;
+      --mdc-elevated-card-container-shape: 12px;
+      --mdc-elevated-card-container-color: var(--rp-info-soft);
+      --mdc-elevated-card-container-elevation: var(--mat-app-elevation-shadow-level-1);
+    }
+    .placeholder-spinner { flex-shrink: 0; margin-right: 12px; }
+    .streaming-placeholder p { color: var(--rp-on-surface-variant); margin: 0; font-style: italic; }
+
     /* Empty state */
-    .empty-state { text-align: center; color: #999; padding: 40px; font-size: 1rem; }
+    .empty-state { text-align: center; color: var(--rp-on-surface-variant); padding: 40px; font-size: 1rem; }
 
     /* Pulse animation for processing chip */
     @keyframes pulse-chip { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
@@ -220,6 +232,18 @@ export class ActiveResearchComponent implements OnInit, OnDestroy {
       FAILED: 'Failed', CANCELLED: 'Cancelled'
     };
     return labels[status] || status;
+  }
+
+  /** Hover affordance for the status chip: what the user can actually do with this session. */
+  statusHint(status: string): string {
+    const hints: Record<string, string> = {
+      PENDING: 'Queued — the pipeline has not started yet',
+      PROCESSING: 'Research running — steps and live report appear below',
+      COMPLETED: 'Report available',
+      FAILED: 'Failed — resume this session to run it again',
+      CANCELLED: 'Cancelled — resume this session to run it again'
+    };
+    return hints[status] || status;
   }
 
   private loadSession(): void {

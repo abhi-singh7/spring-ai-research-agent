@@ -32,7 +32,7 @@ import { ResearchSession } from '../../core/models/research.model';
       } @else if (hasError()) {
         <div class="doc-state">
           <p>Failed to load session. Please try again.</p>
-          <button mat-raised-button color="primary" (click)="retry()">Retry</button>
+          <button mat-raised-button class="mat-primary" (click)="retry()">Retry</button>
         </div>
       } @else if (session()?.finalReport) {
         <article class="doc-article">
@@ -54,46 +54,35 @@ import { ResearchSession } from '../../core/models/research.model';
     </div>
   `,
   styles: [`
-    .doc-page { min-height: 100vh; background: #f7f8fb; padding: 0 24px 64px; }
+    .doc-page { min-height: 100vh; background: var(--rp-surface); padding: 0 24px 64px; }
 
     .doc-topbar {
       position: sticky; top: 0; z-index: 10;
       display: flex; align-items: center; justify-content: space-between;
       padding: 10px 0; margin-bottom: 8px;
-      background: rgba(247, 248, 251, 0.9);
+      background: var(--rp-surface);
       backdrop-filter: blur(6px);
     }
     .back-link {
       display: inline-flex; align-items: center; gap: 6px;
-      color: #1a1a2e; text-decoration: none; font-weight: 500;
+      color: var(--rp-on-surface); text-decoration: none; font-weight: 500;
       padding: 8px 14px; border-radius: 8px;
-      transition: all 0.2s ease;
+      transition: background-color var(--rp-motion-fast) var(--rp-easing-standard), color var(--rp-motion-fast) var(--rp-easing-standard);
     }
-    .back-link:hover { background: rgba(99, 102, 241, 0.08); color: #4f46e5; }
+    .back-link:hover { background: var(--rp-brand-08); color: var(--rp-primary); }
     .back-link mat-icon { font-size: 20px; width: 20px; height: 20px; line-height: 20px; }
 
     .doc-article { max-width: 1000px; margin: 0 auto; }
-    .doc-header h1 { font-size: 2rem; font-weight: 700; color: #0f0f23; line-height: 1.25; margin: 24px 0 8px; }
-    .doc-meta { color: #8a8f98; font-size: 0.9rem; margin: 0 0 24px; }
+    .doc-header h1 { font-size: 2rem; font-weight: 700; color: var(--rp-on-surface); line-height: 1.25; margin: 24px 0 8px; }
+    .doc-meta { color: var(--rp-on-surface-variant); font-size: 0.9rem; margin: 0 0 24px; }
 
     /* Headings must clear the sticky top bar when scroll-targeted */
     .doc-article .report-doc h1,
     .doc-article .report-doc h2,
     .doc-article .report-doc h3 { scroll-margin-top: 76px; }
 
-    .doc-state { text-align: center; padding: 60px 0; color: #999; font-size: 1rem; }
+    .doc-state { text-align: center; padding: 60px 0; color: var(--rp-on-surface-variant); font-size: 1rem; }
     .doc-state p { margin-bottom: 16px; }
-
-    /* Dark mode */
-    @media (prefers-color-scheme: dark) {
-      .doc-page { background: #14161b; }
-      .doc-topbar { background: rgba(20, 22, 27, 0.9); }
-      .back-link { color: #e5e7eb; }
-      .back-link:hover { background: rgba(129, 140, 248, 0.12); color: #a5b4fc; }
-      .doc-header h1 { color: #f0f2f5; }
-      .doc-meta { color: #8b919c; }
-      .doc-state { color: #9e9e9e; }
-    }
   `]
 })
 export class ReportDocumentComponent {

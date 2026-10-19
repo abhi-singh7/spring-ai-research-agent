@@ -8,6 +8,7 @@ import com.researchagent.model.dto.SubTopic;
 import com.researchagent.model.entity.ResearchSession;
 import com.researchagent.model.enums.ResearchStatus;
 import com.researchagent.model.enums.StepType;
+import com.researchagent.repository.LlmLogRepository;
 import com.researchagent.repository.ResearchSessionRepository;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +40,7 @@ class ResearchQualityEvalTest {
     private ResearchSessionRepository sessionRepo;
     private ResearchStreamingService streamService;
     private ResearchCancellationRegistry cancellationRegistry;
+    private LlmLogRepository llmLogRepository;
     private ResearchOrchestratorService service;
     private ResearchSession session;
 
@@ -50,8 +52,9 @@ class ResearchQualityEvalTest {
         when(sessionRepo.save(any(ResearchSession.class))).thenAnswer(inv -> inv.getArgument(0));
 
         cancellationRegistry = new ResearchCancellationRegistry();
+        llmLogRepository = mock(LlmLogRepository.class);
         service = new ResearchOrchestratorService(llmGateway, new ObjectMapper(), sessionRepo,
-                streamService, (Runnable r) -> { }, cancellationRegistry);
+                streamService, (Runnable r) -> { }, cancellationRegistry, llmLogRepository);
 
         session = new ResearchSession();
         session.setId(UUID.randomUUID());

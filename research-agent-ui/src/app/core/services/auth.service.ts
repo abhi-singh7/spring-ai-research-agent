@@ -93,12 +93,21 @@ export class AuthService {
           resolve();
         },
         error: (err: HttpErrorResponse) => {
-          console.warn('[AuthService] Stored token rejected by /api/auth/me — clearing session.');
-          localStorage.removeItem(AuthService.TOKEN_KEY);
+          // Distinguish "the server rejected the token" from "we could not reach the server".
+          // Only a 4xx rejection ends the session; a transport failure (status 0 — backend down)
+          // or a server fault (5xx) keeps the token in localStorage so the next boot re-validates it
+          // once the backend is back, instead of signing the user out with a false "Session expired"
+          // banner (openspec/changes/boot-session-restore).
+          const rejected = err.status >= 400 && err.status < 500;
+          if (rejected) {
+            console.warn('[AuthService] Stored token rejected by /api/auth/me — clearing session.');
+            localStorage.removeItem(AuthService.TOKEN_KEY);
+            this.restoreExpired.set(true);
+          } else {
+            console.warn(`[AuthService] /api/auth/me unreachable (${err.status}) — keeping stored token.`);
+          }
           this.currentUser.set(null);
           this.authStatus.set('anonymous');
-          // A stored token that no longer validates is, by definition, an expired session.
-          this.restoreExpired.set(true);
           resolve();
         }
       });

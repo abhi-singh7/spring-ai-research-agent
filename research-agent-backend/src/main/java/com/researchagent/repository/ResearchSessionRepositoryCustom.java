@@ -30,4 +30,23 @@ public interface ResearchSessionRepositoryCustom {
      *         PROCESSING/COMPLETED, or a concurrent resume won the race) and nothing was changed
      */
     int markResumableIfTerminal(UUID id, LocalDateTime updatedAt);
+
+    /**
+     * Owner-scoped history page, newest first. {@code owner} matches sessions created by that user PLUS
+     * legacy sessions that have no {@code owner} field at all (MongoDB matches a missing field with a
+     * null equality term), so pre-ownership history stays visible after the upgrade. Filtering happens in
+     * the query, never after pagination, so page size and {@code totalElements} describe the filtered set.
+     */
+    org.springframework.data.domain.Page<com.researchagent.model.entity.ResearchSession> findOwnedByOrderByCreatedAtDesc(
+            String owner, org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * Owner-scoped topic search (case-insensitive), newest first — same legacy-null rule as
+     * {@link findOwnedByOrderByCreatedAtDesc}.
+     */
+    org.springframework.data.domain.Page<com.researchagent.model.entity.ResearchSession> findByTopicContainingIgnoreCaseAndOwner(
+            String query, String owner, org.springframework.data.domain.Pageable pageable);
+
+    /** Sessions owned by the given user (legacy unowned sessions excluded) — resource-limit diagnostics. */
+    long countOwnedBy(String owner);
 }

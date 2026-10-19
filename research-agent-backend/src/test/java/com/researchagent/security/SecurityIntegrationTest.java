@@ -1,5 +1,8 @@
 package com.researchagent.security;
 
+import com.researchagent.model.entity.ResearchSession;
+import com.researchagent.model.enums.ResearchStatus;
+import com.researchagent.repository.ResearchSessionRepository;
 import com.researchagent.service.ResearchStreamingService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +37,9 @@ class SecurityIntegrationTest {
 
     @Autowired
     private ResearchStreamingService streamingService;
+
+    @Autowired
+    private ResearchSessionRepository sessionRepo;
 
     @Value("${app.security.jwt.secret}")
     private String jwtSecret;
@@ -129,21 +135,53 @@ class SecurityIntegrationTest {
         UUID sessionId = UUID.randomUUID();
         String token = jwtService.issue("alice", "USER");
 
-        MvcResult mvcResult = mockMvc.perform(get("/api/research/stream/{sessionId}", sessionId)
-                        .param("token", token))
-                .andReturn();
+        // The ownership gate reads the session document, so the streamed session must exist; it is
+        // owned by the caller ("alice") so the gate lets it through.
+        ResearchSession owned = new ResearchSession();
+        owned.setId(sessionId);
+        owned.setOwner("alice");
+        owned.setStatus(ResearchStatus.PROCESSING);
+        sessionRepo.save(owned);
+        try {
+            MvcResult mvcResult = mockMvc.perform(get("/api/research/stream/{sessionId}", sessionId)
+                    .param("token", token))
+                    .andReturn();
 
-        assertThat(mvcResult.getResponse().getStatus()).isEqualTo(200);
-        assertThat(mvcResult.getResponse().getContentType()).contains("text/event-stream");
+            assertThat(mvcResult.getResponse().getStatus()).isEqualTo(200);
+            assertThat(mvcResult.getResponse().getContentType()).contains("text/event-stream");
 
-        // The controller registered the emitter for this session; emit an event, then complete
-        // the emitter so the async cycle ends and the mock response flushes.
-        streamingService.sendProgress(sessionId, "integration test progress");
-        streamingService.removeStream(sessionId);
-        mvcResult.getAsyncResult(5_000);
+            // The controller registered the emitter for this session; emit an event, then complete
+            // the emitter so the async cycle ends and the mock response flushes.
+            streamingService.sendProgress(sessionId, "integration test progress");
+            streamingService.removeStream(sessionId);
+            mvcResult.getAsyncResult(5_000);
 
-        String body = mvcResult.getResponse().getContentAsString();
-        assertThat(body).contains("event:PROGRESS");
-        assertThat(body).contains("integration test progress");
+            String body = mvcResult.getResponse().getContentAsString();
+            assertThat(body).contains("event:PROGRESS");
+            assertThat(body).contains("integration test progress");
+        } finally {
+            sessionRepo.deleteById(sessionId);
+        }
+    }
+
+    @Test
+    void streamWithValidTokenForForeignSession_returns404BeforeSseOpens() throws Exception {
+        UUID sessionId = UUID.randomUUID();
+        String token = jwtService.issue("alice", "USER");
+
+        ResearchSession foreign = new ResearchSession();
+        foreign.setId(sessionId);
+        foreign.setOwner("bob");
+        foreign.setStatus(ResearchStatus.PROCESSING);
+        sessionRepo.save(foreign);
+        try {
+            // A valid token from another user must not open a stream, and 404 (not 403) keeps the
+            // session's existence unconfirmed (openspec/changes/session-ownership).
+            mockMvc.perform(get("/api/research/stream/{sessionId}", sessionId).param("token", token))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.error").exists());
+        } finally {
+            sessionRepo.deleteById(sessionId);
+        }
     }
 }
